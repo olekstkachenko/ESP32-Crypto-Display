@@ -104,6 +104,7 @@ String textColorKey = "standard";
 String unitKey = "metric"; // metric = C/mm, imperial = F/in
 String regionFormatKey = "europe"; // europe = 24h + dd.mm.yyyy, us = 12h + mm/dd/yyyy
 String timezoneKey = "europe_central";
+String currentLang = "ua"; // "ua" or "en"
 
 // =========================================================
 // LAYOUT
@@ -238,7 +239,22 @@ const char* homeWidgetKey(HomeWidgetType type) {
   }
 }
 
-const char* homeWidgetLabel(HomeWidgetType type) {
+const char* homeWidgetLabel(HomeWidgetType type, bool isUa = false) {
+  if (isUa) {
+    switch (type) {
+      case HOME_WIDGET_WEEK:    return "Номер тижня";
+      case HOME_WIDGET_TIMER:   return "Таймер";
+      case HOME_WIDGET_RAIN:    return "Опади";
+      case HOME_WIDGET_OUTDOOR: return "Температура";
+      case HOME_WIDGET_KP:      return "KP індекс";
+      case HOME_WIDGET_UV:      return "UV індекс";
+      case HOME_WIDGET_WIND:    return "Вітер";
+      case HOME_WIDGET_SUN:     return "Схід / Захід сонця";
+      case HOME_WIDGET_BTC:     return "Ціна Bitcoin";
+      case HOME_WIDGET_ETH:     return "Ціна Ethereum";
+      default:                  return "Тиждень";
+    }
+  }
   switch (type) {
     case HOME_WIDGET_WEEK:    return "Week";
     case HOME_WIDGET_TIMER:   return "Timer";
@@ -268,7 +284,16 @@ HomeWidgetType homeWidgetFromKey(const String& key) {
   return HOME_WIDGET_WEEK;
 }
 
-const char* homeSlotLabel(int slot) {
+const char* homeSlotLabel(int slot, bool isUa = false) {
+  if (isUa) {
+    switch (slot) {
+      case 0: return "Вгорі ліворуч";
+      case 1: return "Вгорі праворуч";
+      case 2: return "Внизу ліворуч";
+      case 3: return "Внизу праворуч";
+      default: return "Слот";
+    }
+  }
   switch (slot) {
     case 0: return "Top left";
     case 1: return "Top right";
@@ -405,7 +430,7 @@ void getHomeSlotRect(int slot, int& x, int& y, int& w, int& h) {
   h = HOME_WIDGET_H;
 }
 
-void appendHomeWidgetOptions(String& page, const String& selectedKey) {
+void appendHomeWidgetOptions(String& page, const String& selectedKey, bool isUa = false) {
   const HomeWidgetType types[] = {
     HOME_WIDGET_WEEK,
     HOME_WIDGET_TIMER,
@@ -426,7 +451,7 @@ void appendHomeWidgetOptions(String& page, const String& selectedKey) {
     page += "'";
     if (selectedKey == key) page += " selected";
     page += ">";
-    page += homeWidgetLabel(type);
+    page += homeWidgetLabel(type, isUa);
     page += "</option>";
   }
 }
@@ -1065,6 +1090,8 @@ void loadStoredSettings() {
     cryptoSymbols[i] = prefs.getString(key.c_str(), cryptoSymbols[i]);
   }
 
+  currentLang       = prefs.getString("lang", "ua");
+  if (currentLang != "ua" && currentLang != "en") currentLang = "ua";
   cryptoIntervalSec = prefs.getInt("crypto_int", 60);
   wifiSSID          = prefs.getString("wifi_ssid", WIFI_SSID);
   wifiPass          = prefs.getString("wifi_pass", WIFI_PASS);
@@ -2567,13 +2594,17 @@ void handleRoot() {
   String tz     = sanitizeTimezoneKey(prefs.getString("tz", "europe_central"));
   String nickname = prefs.getString("nickname", "");
   bool flashMode = prefs.getBool("flashMode", false);
+  currentLang   = prefs.getString("lang", "ua");
+  if (currentLang != "ua" && currentLang != "en") currentLang = "ua";
+  bool isUa = (currentLang == "ua");
+
   String homeSlotKeys[HOME_SLOT_COUNT];
   for (int i = 0; i < HOME_SLOT_COUNT; i++) {
     homeSlotKeys[i] = prefs.getString((String("homeSlot") + String(i)).c_str(), homeWidgetKey(homeWidgetSlots[i]));
   }
 
   String page;
-  page.reserve(26000);
+  page.reserve(28000);
 
   page += "<!doctype html><html><head>";
   page += "<meta charset='utf-8'>";
@@ -2581,15 +2612,12 @@ void handleRoot() {
   page += "<title>Crypto Display</title>";
   page += "<style>";
   page += ":root{color-scheme:dark;}";
-  page += "body{margin:0;background:linear-gradient(180deg,#0b1018 0%,#111827 100%);color:#edf2f7;font-family:system-ui,sans-serif;}";
+  page += "body{margin:0;background:linear-gradient(180deg,#0b1018 0%,#111827 100%);color:#edf2f7;font-family:system-ui,-apple-system,sans-serif;}";
   page += ".wrap{max-width:980px;margin:0 auto;padding:28px 16px 36px;}";
-  page += ".hero{margin-bottom:18px;padding:18px 20px;border:1px solid #243244;border-radius:20px;background:linear-gradient(135deg,#111927 0%,#172235 100%);box-shadow:0 10px 30px rgba(0,0,0,.22);}";
+  page += ".hero{margin-bottom:18px;padding:20px;border:1px solid #243244;border-radius:20px;background:linear-gradient(135deg,#111927 0%,#172235 100%);box-shadow:0 10px 30px rgba(0,0,0,.22);}";
   page += ".hero h1{font-size:30px;margin:0 0 8px 0;}";
   page += ".hero p{margin:0;color:#a9b7c9;font-size:14px;}";
-  page += "<div style='margin-top:14px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;'>";
-  page += "<span class='ip'>IP: " + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString()) + "</span>";
-  page += "<a href='/update' style='color:#38bdf8;text-decoration:none;font-size:13px;font-weight:600;padding:8px 14px;border-radius:999px;border:1px solid #0284c7;background:#0369a120;'>⚡ OTA Firmware Update &rarr;</a>";
-  page += "</div></div>";
+  page += ".ip{display:inline-block;padding:8px 14px;border-radius:999px;background:#0b1220;border:1px solid #334155;color:#dbe7f5;font-size:13px;}";
   page += ".layout{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start;}";
   page += ".stack{display:grid;gap:16px;}";
   page += ".panel{background:#171b22;border:1px solid #2d3748;border-radius:18px;padding:18px;margin:0;}";
@@ -2607,7 +2635,8 @@ void handleRoot() {
   page += ".label{display:block;font-size:13px;margin:0 0 8px 0;color:#a0aec0;font-weight:600;}";
   page += "textarea,input,select{width:100%;border-radius:12px;border:1px solid #334155;background:#0b1220;color:#edf2f7;padding:12px;box-sizing:border-box;font:inherit;}";
   page += "textarea{min-height:170px;resize:vertical;}";
-  page += "button{margin-top:18px;background:#38bdf8;border:none;color:#001018;padding:13px 18px;border-radius:12px;font-weight:800;cursor:pointer;font:inherit;}";
+  page += "button.submit-btn{margin-top:18px;background:#38bdf8;border:none;color:#001018;padding:14px 20px;border-radius:12px;font-weight:800;font-size:16px;cursor:pointer;width:100%;font:inherit;transition:background .2s;}";
+  page += "button.submit-btn:hover{background:#7dd3fc;}";
   page += ".muted{font-size:13px;color:#94a3b8;line-height:1.45;}";
   page += ".footer-note{margin-top:10px;font-size:12px;color:#7f92a8;}";
   page += ".settings-block{margin-top:18px;padding-top:16px;border-top:1px solid #2b3545;}";
@@ -2633,35 +2662,46 @@ void handleRoot() {
   page += "@media(max-width:820px){.layout{grid-template-columns:1fr;}.grid,.grid-3,.timer-slot-grid{grid-template-columns:1fr;}.color-row{grid-template-columns:1fr;}}";
   page += "</style></head><body><div class='wrap'>";
   page += "<div class='hero'>";
+  page += "<div style='display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;'>";
+  page += "<div>";
   page += "<h1>Crypto Display</h1>";
-  page += "<p>Shape Crypto Display into your own desk companion with widgets, notes, colors, and smart daily tools.</p>";
-  page += "<div class='ip'>ESP IP: ";
-  page += WiFi.localIP().toString();
+  page += "<p>" + String(isUa ? "Налаштуйте Crypto Display як власного настільного помічника з віджетами, нотатками, кольорами та розумними щоденними інструментами." : "Shape Crypto Display into your own desk companion with widgets, notes, colors, and smart daily tools.") + "</p>";
+  page += "</div>";
+  page += "<div style='display:flex;align-items:center;gap:10px;'>";
+  page += "<label class='label' style='margin:0;font-size:13px;'>" + String(isUa ? "Мова:" : "Language:") + "</label>";
+  page += "<select name='lang' form='settingsForm' onchange='document.getElementById(\"settingsForm\").submit();' style='width:auto;padding:8px 12px;font-size:13px;border-radius:8px;'>";
+  page += "<option value='ua'" + String(isUa ? " selected" : "") + ">🇺🇦 Українська</option>";
+  page += "<option value='en'" + String(!isUa ? " selected" : "") + ">🇬🇧 English</option>";
+  page += "</select>";
+  page += "</div></div>";
+  page += "<div style='margin-top:14px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;'>";
+  page += "<span class='ip'>IP: " + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString()) + "</span>";
+  page += "<a href='/update' style='color:#38bdf8;text-decoration:none;font-size:13px;font-weight:600;padding:8px 14px;border-radius:999px;border:1px solid #0284c7;background:#0369a120;'>⚡ " + String(isUa ? "Оновлення прошивки (OTA) &rarr;" : "OTA Firmware Update &rarr;") + "</a>";
   page += "</div></div>";
 
-  page += "<form method='POST' action='/save'>";
+  page += "<form id='settingsForm' method='POST' action='/save'>";
   page += "<div class='layout'><div class='stack'>";
 
   page += "<div class='panel' data-panel='notes'>";
-  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>Notes</h2><span class='panel-chevron'>&#9662;</span></button>";
+  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>" + String(isUa ? "Нотатки" : "Notes") + "</h2><span class='panel-chevron'>&#9662;</span></button>";
   page += "<div class='panel-body'>";
-  page += "<p>Short notes synced to the device.</p>";
-  page += "<label class='label'>Notes</label>";
+  page += "<p>" + String(isUa ? "Короткі текстові нотатки, що миттєво синхронізуються на екран." : "Short notes synced to the device.") + "</p>";
+  page += "<label class='label'>" + String(isUa ? "Текст нотаток" : "Notes") + "</label>";
   page += "<textarea name='notes' maxlength='700'>";
   page += htmlEscape(notesText);
   page += "</textarea>";
-  page += "<div class='muted'>Saved notes show up right away.</div>";
+  page += "<div class='muted'>" + String(isUa ? "Збережені нотатки одразу відображаються на екрані." : "Saved notes show up right away.") + "</div>";
   page += "</div></div>";
 
   page += "<div class='panel' data-panel='theme'>";
-  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>Theme and color</h2><span class='panel-chevron'>&#9662;</span></button>";
+  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>" + String(isUa ? "Тема та кольори" : "Theme and color") + "</h2><span class='panel-chevron'>&#9662;</span></button>";
   page += "<div class='panel-body'>";
-  page += "<p>Colors and visual style for the display.</p>";
+  page += "<p>" + String(isUa ? "Кольорова гама та візуальний стиль оформлення дисплея." : "Colors and visual style for the display.") + "</p>";
   page += "<div class='grid'>";
 
   page += "<div style='grid-column:1 / -1;' class='color-stack'>";
 
-  page += "<div class='color-row'><div class='color-meta'><label class='label'>Accent</label><span class='color-value' id='accent-value'>";
+  page += "<div class='color-row'><div class='color-meta'><label class='label'>" + String(isUa ? "Акцент" : "Accent") + "</label><span class='color-value' id='accent-value'>";
   page += accent;
   page += "</span></div><div class='swatch-row'>";
   page += "<label class='swatch" + String(accent=="standard"?" active":"") + "' style='background:" + accentPreviewCss("standard") + ";'><input type='radio' name='accent' value='standard'" + String(accent=="standard"?" checked":"") + "></label>";
@@ -2678,7 +2718,7 @@ void handleRoot() {
   page += "<label class='swatch" + String(accent=="red"?" active":"") + "' style='background:" + accentPreviewCss("red") + ";'><input type='radio' name='accent' value='red'" + String(accent=="red"?" checked":"") + "></label>";
   page += "</div></div>";
 
-  page += "<div class='color-row'><div class='color-meta'><label class='label'>Text</label><span class='color-value' id='text-value'>";
+  page += "<div class='color-row'><div class='color-meta'><label class='label'>" + String(isUa ? "Текст" : "Text") + "</label><span class='color-value' id='text-value'>";
   page += txt;
   page += "</span></div><div class='swatch-row'>";
   page += "<label class='swatch" + String(txt=="standard"?" active":"") + "' style='background:" + accentPreviewCss("standard") + ";'><input type='radio' name='text' value='standard'" + String(txt=="standard"?" checked":"") + "></label>";
@@ -2695,7 +2735,7 @@ void handleRoot() {
   page += "<label class='swatch" + String(txt=="red"?" active":"") + "' style='background:" + accentPreviewCss("red") + ";'><input type='radio' name='text' value='red'" + String(txt=="red"?" checked":"") + "></label>";
   page += "</div></div>";
 
-  page += "<div class='color-row'><div class='color-meta'><label class='label'>Theme</label><span class='color-value' id='bg-value'>";
+  page += "<div class='color-row'><div class='color-meta'><label class='label'>" + String(isUa ? "Фон" : "Theme") + "</label><span class='color-value' id='bg-value'>";
   page += bg;
   page += "</span></div><div class='swatch-row'>";
   page += "<label class='swatch" + String(bg=="slate"?" active":"") + "' style='background:" + themePreviewCss("slate") + ";'><input type='radio' name='bg' value='slate'" + String(bg=="slate"?" checked":"") + "></label>";
@@ -2715,99 +2755,99 @@ void handleRoot() {
   page += "</div></div></div>";
 
   page += "<div class='panel' data-panel='settings'>";
-  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>Settings</h2><span class='panel-chevron'>&#9662;</span></button>";
+  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>" + String(isUa ? "Параметри пристрою" : "Settings") + "</h2><span class='panel-chevron'>&#9662;</span></button>";
   page += "<div class='panel-body'>";
-  page += "<p>Core behavior and timer setup.</p>";
+  page += "<p>" + String(isUa ? "Поведінка системи, регіон та таймери." : "Core behavior and timer setup.") + "</p>";
   page += "<div class='settings-block'>";
-  page += "<span class='settings-title'>General</span>";
+  page += "<span class='settings-title'>" + String(isUa ? "Загальні" : "General") + "</span>";
   page += "<div class='grid'>";
-  page += "<div><label class='label'>Buddy nickname</label><input name='nickname' maxlength='24' value='" + htmlEscape(nickname) + "'></div>";
-  page += "<div><label class='label'>Auto sleep interval</label><select name='sleepMin'>";
-  page += "<option value='0'"  + String(sleepIntervalMin==0?" selected":"")  + ">Never</option>";
-  page += "<option value='1'"  + String(sleepIntervalMin==1?" selected":"")  + ">1 minute</option>";
-  page += "<option value='5'"  + String(sleepIntervalMin==5?" selected":"")  + ">5 minutes</option>";
-  page += "<option value='10'" + String(sleepIntervalMin==10?" selected":"") + ">10 minutes</option>";
-  page += "<option value='30'" + String(sleepIntervalMin==30?" selected":"") + ">30 minutes</option>";
-  page += "<option value='60'" + String(sleepIntervalMin==60?" selected":"") + ">1 hour</option>";
-  page += "</select><div class='muted' style='margin-top:8px;'>Sleep dims the screen first, then turns it fully off after 60 seconds.</div></div>";
-  page += "<div><label class='label'>Measurement system</label><select name='units'>";
-  page += "<option value='metric'"   + String(units=="metric"?" selected":"")   + ">Celsius / mm</option>";
-  page += "<option value='imperial'" + String(units=="imperial"?" selected":"") + ">Fahrenheit / inches</option>";
+  page += "<div><label class='label'>" + String(isUa ? "Ім'я пристрою" : "Buddy nickname") + "</label><input name='nickname' maxlength='24' value='" + htmlEscape(nickname) + "'></div>";
+  page += "<div><label class='label'>" + String(isUa ? "Авто-сон дисплея" : "Auto sleep interval") + "</label><select name='sleepMin'>";
+  page += "<option value='0'"  + String(sleepIntervalMin==0?" selected":"")  + ">" + String(isUa ? "Ніколи" : "Never") + "</option>";
+  page += "<option value='1'"  + String(sleepIntervalMin==1?" selected":"")  + ">" + String(isUa ? "1 хвилина" : "1 minute") + "</option>";
+  page += "<option value='5'"  + String(sleepIntervalMin==5?" selected":"")  + ">" + String(isUa ? "5 хвилин" : "5 minutes") + "</option>";
+  page += "<option value='10'" + String(sleepIntervalMin==10?" selected":"") + ">" + String(isUa ? "10 хвилин" : "10 minutes") + "</option>";
+  page += "<option value='30'" + String(sleepIntervalMin==30?" selected":"") + ">" + String(isUa ? "30 хвилин" : "30 minutes") + "</option>";
+  page += "<option value='60'" + String(sleepIntervalMin==60?" selected":"") + ">" + String(isUa ? "1 година" : "1 hour") + "</option>";
+  page += "</select><div class='muted' style='margin-top:8px;'>" + String(isUa ? "Сон спочатку затемнює екран, а через 60 секунд повністю вимикає підсвітку." : "Sleep dims the screen first, then turns it fully off after 60 seconds.") + "</div></div>";
+  page += "<div><label class='label'>" + String(isUa ? "Система вимірювання" : "Measurement system") + "</label><select name='units'>";
+  page += "<option value='metric'"   + String(units=="metric"?" selected":"")   + ">" + String(isUa ? "Метрична: °C / мм" : "Celsius / mm") + "</option>";
+  page += "<option value='imperial'" + String(units=="imperial"?" selected":"") + ">" + String(isUa ? "Імперська: °F / дюйми" : "Fahrenheit / inches") + "</option>";
   page += "</select></div>";
-  page += "<div><label class='label'>Date format</label><select name='region'>";
-  page += "<option value='europe'" + String(region=="europe"?" selected":"") + ">European: dd.mm.yyyy</option>";
-  page += "<option value='us'" + String(region=="us"?" selected":"") + ">US: mm/dd/yyyy</option>";
+  page += "<div><label class='label'>" + String(isUa ? "Формат дати" : "Date format") + "</label><select name='region'>";
+  page += "<option value='europe'" + String(region=="europe"?" selected":"") + ">" + String(isUa ? "Європейський: дд.мм.рррр" : "European: dd.mm.yyyy") + "</option>";
+  page += "<option value='us'" + String(region=="us"?" selected":"") + ">" + String(isUa ? "Американський: мм/дд/рррр" : "US: mm/dd/yyyy") + "</option>";
   page += "</select></div>";
-  page += "<div><label class='label'>Time zone</label><select name='tz'>";
+  page += "<div><label class='label'>" + String(isUa ? "Часовий пояс" : "Time zone") + "</label><select name='tz'>";
   appendTimezoneOptions(page, tz);
   page += "</select></div>";
   page += "</div>";
   page += "</div>";
-  page += "<div class='settings-block'><span class='settings-title'>Timer</span><div class='settings-desc'>Choose the six quick timers shown in the popup menu.</div><div class='timer-slot-grid'>";
+  page += "<div class='settings-block'><span class='settings-title'>" + String(isUa ? "Таймери фокусування" : "Timer") + "</span><div class='settings-desc'>" + String(isUa ? "Шість швидких інтервалів для спливаючого меню таймера." : "Choose the six quick timers shown in the popup menu.") + "</div><div class='timer-slot-grid'>";
   for (int i = 0; i < 6; i++) {
-    page += "<div class='timer-slot'><div class='timer-slot-head'>Slot " + String(i + 1) + "</div><div class='timer-slot-input'><input type='number' min='1' max='180' name='timer" + String(i) + "' value='" + String(timerPresetMin[i]) + "'><span class='timer-unit'>min</span></div></div>";
+    page += "<div class='timer-slot'><div class='timer-slot-head'>" + String(isUa ? "Слот " : "Slot ") + String(i + 1) + "</div><div class='timer-slot-input'><input type='number' min='1' max='180' name='timer" + String(i) + "' value='" + String(timerPresetMin[i]) + "'><span class='timer-unit'>" + String(isUa ? "хв" : "min") + "</span></div></div>";
   }
   page += "</div>";
-  page += "<div style='margin-top:14px;'><span class='settings-title'>Alert behavior</span><label style='display:flex;align-items:center;gap:10px;color:#edf2f7;'><input type='checkbox' name='flashMode' value='1'" + String(flashMode ? " checked" : "") + " style='width:auto;'>Flash screen when timer ends</label></div></div>";
+  page += "<div style='margin-top:14px;'><span class='settings-title'>" + String(isUa ? "Поведінка сповіщень" : "Alert behavior") + "</span><label style='display:flex;align-items:center;gap:10px;color:#edf2f7;'><input type='checkbox' name='flashMode' value='1'" + String(flashMode ? " checked" : "") + " style='width:auto;'>" + String(isUa ? "Блимати екраном після завершення таймера" : "Flash screen when timer ends") + "</label></div></div>";
   
-  page += "<div class='settings-block'><span class='settings-title'>Crypto Page Settings</span><div class='settings-desc'>Enter 5 Binance ticker symbols (e.g., BTCUSDT, DOGEUSDT).</div><div class='timer-slot-grid'>";
+  page += "<div class='settings-block'><span class='settings-title'>" + String(isUa ? "Налаштування криптовалют" : "Crypto Page Settings") + "</span><div class='settings-desc'>" + String(isUa ? "Введіть 5 тікерів торгових пар Binance (наприклад, BTCUSDT, DOGEUSDT, SOLUSDT)." : "Enter 5 Binance ticker symbols (e.g., BTCUSDT, DOGEUSDT).") + "</div><div class='timer-slot-grid'>";
   for (int i = 0; i < 5; i++) {
-    page += "<div class='timer-slot'><div class='timer-slot-head'>Token " + String(i + 1) + "</div><div class='timer-slot-input'><input type='text' name='crypto" + String(i) + "' value='" + htmlEscape(cryptoSymbols[i]) + "'></div></div>";
+    page += "<div class='timer-slot'><div class='timer-slot-head'>" + String(isUa ? "Токен " : "Token ") + String(i + 1) + "</div><div class='timer-slot-input'><input type='text' name='crypto" + String(i) + "' value='" + htmlEscape(cryptoSymbols[i]) + "'></div></div>";
   }
   page += "</div>";
-  page += "<div style='margin-top:12px;'><label class='label'>Crypto Refresh Interval</label><select name='crypto_interval'>";
-  page += "<option value='30'" + String(cryptoIntervalSec==30?" selected":"") + ">30 seconds</option>";
-  page += "<option value='60'" + String(cryptoIntervalSec==60?" selected":"") + ">1 minute (recommended)</option>";
-  page += "<option value='120'" + String(cryptoIntervalSec==120?" selected":"") + ">2 minutes</option>";
-  page += "<option value='300'" + String(cryptoIntervalSec==300?" selected":"") + ">5 minutes</option>";
+  page += "<div style='margin-top:12px;'><label class='label'>" + String(isUa ? "Інтервал оновлення цін" : "Crypto Refresh Interval") + "</label><select name='crypto_interval'>";
+  page += "<option value='30'" + String(cryptoIntervalSec==30?" selected":"") + ">" + String(isUa ? "30 секунд" : "30 seconds") + "</option>";
+  page += "<option value='60'" + String(cryptoIntervalSec==60?" selected":"") + ">" + String(isUa ? "1 хвилина (рекомендовано)" : "1 minute (recommended)") + "</option>";
+  page += "<option value='120'" + String(cryptoIntervalSec==120?" selected":"") + ">" + String(isUa ? "2 хвилини" : "2 minutes") + "</option>";
+  page += "<option value='300'" + String(cryptoIntervalSec==300?" selected":"") + ">" + String(isUa ? "5 хвилин" : "5 minutes") + "</option>";
   page += "</select></div>";
   page += "</div>";
-  page += "<div class='settings-block'><span class='settings-title'>Location</span><div class='settings-desc'>Used for weather data and sun times.</div><div class='grid-3'>";
-  page += "<div><label class='label'>Location name</label><input name='locname' value='" + htmlEscape(locationName) + "'></div>";
-  page += "<div><label class='label'>Latitude</label><input name='lat' value='" + String(LAT, 6) + "'></div>";
-  page += "<div><label class='label'>Longitude</label><input name='lng' value='" + String(LNG, 6) + "'></div>";
-  page += "</div><div class='footer-note'>Example Berlin: latitude 52.5200, longitude 13.4050.</div></div>";
+  page += "<div class='settings-block'><span class='settings-title'>" + String(isUa ? "Локація (погода)" : "Location") + "</span><div class='settings-desc'>" + String(isUa ? "Використовується для погоди та сходу/заходу сонця." : "Used for weather data and sun times.") + "</div><div class='grid-3'>";
+  page += "<div><label class='label'>" + String(isUa ? "Назва міста" : "Location name") + "</label><input name='locname' value='" + htmlEscape(locationName) + "'></div>";
+  page += "<div><label class='label'>" + String(isUa ? "Широта (Latitude)" : "Latitude") + "</label><input name='lat' value='" + String(LAT, 6) + "'></div>";
+  page += "<div><label class='label'>" + String(isUa ? "Довгота (Longitude)" : "Longitude") + "</label><input name='lng' value='" + String(LNG, 6) + "'></div>";
+  page += "</div><div class='footer-note'>" + String(isUa ? "Приклад Київ: широта 50.4501, довгота 30.5234." : "Example Berlin: latitude 52.5200, longitude 13.4050.") + "</div></div>";
   page += "</div></div>";
 
   page += "<div class='panel' data-panel='widgets'>";
-  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>Widget Customization</h2><span class='panel-chevron'>&#9662;</span></button>";
+  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>" + String(isUa ? "Налаштування віджетів" : "Widget Customization") + "</h2><span class='panel-chevron'>&#9662;</span></button>";
   page += "<div class='panel-body'>";
-  page += "<p>Choose which widgets appear in the four Home slots below the clock card.</p>";
+  page += "<p>" + String(isUa ? "Оберіть, які віджети показувати у 4 слотах на головному екрані під годинником." : "Choose which widgets appear in the four Home slots below the clock card.") + "</p>";
   page += "<div class='grid'>";
   for (int i = 0; i < HOME_SLOT_COUNT; i++) {
     page += "<div><label class='label'>";
-    page += homeSlotLabel(i);
+    page += homeSlotLabel(i, isUa);
     page += "</label><select name='homeSlot";
     page += String(i);
     page += "'>";
-    appendHomeWidgetOptions(page, homeSlotKeys[i]);
+    appendHomeWidgetOptions(page, homeSlotKeys[i], isUa);
     page += "</select></div>";
   }
   page += "</div>";
   page += "</div></div>";
 
   page += "<div class='panel' data-panel='network'>";
-  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>Network & MQTT Settings</h2><span class='panel-chevron'>&#9662;</span></button>";
+  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>" + String(isUa ? "Мережа та MQTT" : "Network & MQTT Settings") + "</h2><span class='panel-chevron'>&#9662;</span></button>";
   page += "<div class='panel-body'>";
-  page += "<p>Manage your WiFi and Home Assistant / Mosquitto MQTT broker credentials.</p>";
-  page += "<div class='settings-block'><span class='settings-title'>Wi-Fi Credentials</span><div class='settings-desc'>Update network credentials without reflashing firmware.</div>";
+  page += "<p>" + String(isUa ? "Керування параметрами Wi-Fi та зв'язком із брокером MQTT." : "Manage your WiFi and Home Assistant / Mosquitto MQTT broker credentials.") + "</p>";
+  page += "<div class='settings-block'><span class='settings-title'>" + String(isUa ? "Параметри Wi-Fi" : "Wi-Fi Credentials") + "</span><div class='settings-desc'>" + String(isUa ? "Зміна мережі без перепрошивки пристрою." : "Update network credentials without reflashing firmware.") + "</div>";
   page += "<div class='grid'>";
   page += "<div><label class='label'>Wi-Fi SSID</label><input type='text' name='wifi_ssid' value='" + htmlEscape(wifiSSID) + "'></div>";
-  page += "<div><label class='label'>Wi-Fi Password</label><input type='password' name='wifi_pass' placeholder='Leave blank to keep current' value=''></div>";
+  page += "<div><label class='label'>" + String(isUa ? "Wi-Fi Пароль" : "Wi-Fi Password") + "</label><input type='password' name='wifi_pass' placeholder='" + String(isUa ? "Залиште пустим, щоб не змінювати" : "Leave blank to keep current") + "' value=''></div>";
   page += "</div></div>";
-  page += "<div class='settings-block'><span class='settings-title'>MQTT Broker</span><div class='settings-desc'>Optional telemetry reporting to Home Assistant or Mosquitto.</div>";
-  page += "<label style='display:flex;align-items:center;gap:10px;color:#edf2f7;margin-bottom:12px;'><input type='checkbox' name='mqtt_enabled' value='1'" + String(mqttEnabled ? " checked" : "") + " style='width:auto;'>Enable MQTT</label>";
+  page += "<div class='settings-block'><span class='settings-title'>MQTT Broker</span><div class='settings-desc'>" + String(isUa ? "Телеметрія для Home Assistant або Mosquitto." : "Optional telemetry reporting to Home Assistant or Mosquitto.") + "</div>";
+  page += "<label style='display:flex;align-items:center;gap:10px;color:#edf2f7;margin-bottom:12px;'><input type='checkbox' name='mqtt_enabled' value='1'" + String(mqttEnabled ? " checked" : "") + " style='width:auto;'>" + String(isUa ? "Увімкнути MQTT" : "Enable MQTT") + "</label>";
   page += "<div class='grid-3'>";
-  page += "<div><label class='label'>Server / Host</label><input type='text' name='mqtt_server' value='" + htmlEscape(mqttServer) + "' placeholder='192.168.1.100'></div>";
-  page += "<div><label class='label'>Port</label><input type='number' name='mqtt_port' value='" + String(mqttPort) + "'></div>";
-  page += "<div><label class='label'>Username</label><input type='text' name='mqtt_user' value='" + htmlEscape(mqttUser) + "'></div>";
+  page += "<div><label class='label'>" + String(isUa ? "Сервер / IP" : "Server / Host") + "</label><input type='text' name='mqtt_server' value='" + htmlEscape(mqttServer) + "' placeholder='192.168.1.100'></div>";
+  page += "<div><label class='label'>" + String(isUa ? "Порт" : "Port") + "</label><input type='number' name='mqtt_port' value='" + String(mqttPort) + "'></div>";
+  page += "<div><label class='label'>" + String(isUa ? "Користувач" : "Username") + "</label><input type='text' name='mqtt_user' value='" + htmlEscape(mqttUser) + "'></div>";
   page += "</div>";
-  page += "<div style='margin-top:10px;'><label class='label'>Password</label><input type='password' name='mqtt_pass' placeholder='Leave blank to keep current' value=''></div>";
+  page += "<div style='margin-top:10px;'><label class='label'>" + String(isUa ? "Пароль MQTT" : "Password") + "</label><input type='password' name='mqtt_pass' placeholder='" + String(isUa ? "Залиште пустим, щоб не змінювати" : "Leave blank to keep current") + "' value=''></div>";
   page += "</div></div></div>";
 
   page += "</div><div class='stack'>";
 
-  page += "<button type='submit'>Save to Crypto Display</button>";
+  page += "<button type='submit' class='submit-btn'>" + String(isUa ? "💾 Зберегти налаштування в Crypto Display" : "Save to Crypto Display") + "</button>";
   page += "</div></div></form>";
   page += "<script>";
   page += "var colorNames={accent:{standard:'Standard',ice:'Ice',white:'White',cyan:'Cyan',mint:'Mint',green:'Green',blue:'Blue',purple:'Purple',pink:'Pink',orange:'Orange',amber:'Amber',red:'Red'},text:{standard:'Standard',ice:'Ice',white:'White',cyan:'Cyan',mint:'Mint',green:'Green',blue:'Blue',purple:'Purple',pink:'Pink',orange:'Orange',amber:'Amber',red:'Red'},bg:{slate:'Slate',deep:'Deep black',nordic:'Nordic blue',forest:'Forest',coffee:'Coffee',soft:'Soft dark',midnight:'Midnight',graphite:'Graphite',garnet:'Garnet',ochre:'Ochre'}};";
@@ -2846,6 +2886,14 @@ void handleRoot() {
 }
 
 void handleSave() {
+  if (server.hasArg("lang")) {
+    String l = server.arg("lang");
+    if (l == "ua" || l == "en") {
+      currentLang = l;
+      prefs.putString("lang", currentLang);
+    }
+  }
+
   String newNotes  = server.hasArg("notes") ? server.arg("notes") : notesText;
   String newAccent = server.hasArg("accent") ? server.arg("accent") : "cyan";
   String newBg     = server.hasArg("bg") ? server.arg("bg") : "slate";
@@ -3029,10 +3077,12 @@ void setupWebServer() {
 
   // OTA Firmware Update Endpoints
   server.on("/update", HTTP_GET, []() {
+    String lang = prefs.getString("lang", "ua");
+    bool isUa = (lang == "ua");
     server.sendHeader("Connection", "close");
-    String updateHtml = F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
-      "<title>Crypto Display - Firmware Update</title>"
-      "<style>"
+    String updateHtml = F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>");
+    updateHtml += "<title>" + String(isUa ? "Crypto Display — Оновлення прошивки" : "Crypto Display - Firmware Update") + "</title>";
+    updateHtml += F("<style>"
       "body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}"
       ".card{background:#161b22;padding:32px;border-radius:12px;border:1px solid #30363d;max-width:420px;width:90%;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,0.6);}"
       "h2{color:#58a6ff;margin-top:0;font-size:22px;}"
@@ -3041,14 +3091,14 @@ void setupWebServer() {
       "input[type=submit]{background:#238636;color:#ffffff;border:none;padding:12px 20px;border-radius:6px;font-size:16px;cursor:pointer;width:100%;font-weight:600;}"
       "input[type=submit]:hover{background:#2ea043;}"
       ".back{display:inline-block;margin-top:18px;color:#58a6ff;text-decoration:none;font-size:14px;}"
-      "</style></head><body>"
-      "<div class='card'><h2>⚡ OTA Firmware Update</h2>"
-      "<p>Upload compiled <code>firmware.bin</code> to wirelessly update your Crypto Display without USB.</p>"
-      "<form method='POST' action='/update' enctype='multipart/form-data'>"
-      "<input type='file' name='update' accept='.bin' required>"
-      "<input type='submit' value='Flash Firmware Now'>"
-      "</form><a href='/' class='back'>&larr; Back to Dashboard</a></div></body></html>");
-    server.send(200, "text/html", updateHtml);
+      "</style></head><body>");
+    updateHtml += "<div class='card'><h2>⚡ " + String(isUa ? "Бездротове OTA-оновлення" : "OTA Firmware Update") + "</h2>";
+    updateHtml += "<p>" + String(isUa ? "Оберіть скомпільований файл <code>firmware.bin</code> для оновлення прошивки по повітрю без USB." : "Upload compiled <code>firmware.bin</code> to wirelessly update your Crypto Display without USB.") + "</p>";
+    updateHtml += F("<form method='POST' action='/update' enctype='multipart/form-data'>"
+      "<input type='file' name='update' accept='.bin' required>");
+    updateHtml += "<input type='submit' value='" + String(isUa ? "Прошити пристрій зараз" : "Flash Firmware Now") + "'>";
+    updateHtml += "</form><a href='/' class='back'>&larr; " + String(isUa ? "Назад до панелі керування" : "Back to Dashboard") + "</a></div></body></html>";
+    server.send(200, "text/html; charset=utf-8", updateHtml);
   });
 
   server.on("/update", HTTP_POST, []() {

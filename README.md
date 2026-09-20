@@ -6,7 +6,10 @@
 
 ## ✨ Features
 
-- 🪙 **Live Crypto Ticker**: Tracks real-time prices & 24h percentage change for 5 customizable Binance trading pairs (e.g. BTC, ETH, SOL, XRP, DOGE, PEPE) with intelligent dynamic decimal precision.
+- 🇺🇦 **Bilingual Interface (UA / EN)**: Full Ukrainian and English localization switchable on the fly with persistent memory.
+- 📱 **Captive Hotspot / SoftAP Fallback**: If Wi-Fi fails to connect, device automatically creates `CryptoDisplay-Setup` hotspot (IP `192.168.4.1`) so you can configure Wi-Fi directly from your smartphone.
+- ⚡ **Wireless OTA Updates**: Flash new firmware `.bin` files wirelessly over the air via `http://<device-ip>/update` without plugging in USB.
+- 🪙 **Live Crypto Ticker**: Tracks real-time prices, tick trend indicators (`^` / `v`), & 24h percentage change for 5 customizable Binance trading pairs (e.g. BTC, ETH, SOL, XRP, DOGE, PEPE) with intelligent dynamic decimal precision.
 - ⏱️ **Clock & Productivity**: NTP time synchronization, regional date formats (Europe 24h / US 12h), customizable focus timer with presets.
 - ⛅ **Weather & Astronomy**: Live outdoor temperature, precipitation, wind speed & direction, UV index, geomagnetic KP index, and automatic next sunrise/sunset tracking.
 - 🛢️ **Fuel & Commodities**: Real-time Brent Crude Oil price (Yahoo Finance) + Ukraine fuel market prices (A-95 & Diesel via Minfin).
