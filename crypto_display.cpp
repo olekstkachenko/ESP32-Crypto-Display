@@ -136,10 +136,8 @@ const int PAGE_ROW3_Y = 198;
 const int PAGE_WIDGET_H = HOME_WIDGET_H;
 
 // =========================================================
-// NOTES
+// WIDGETS
 // =========================================================
-String notesText = "No notes yet.";
-bool notesDirty = true;
 String buddyNickname = "";
 
 enum HomeWidgetType {
@@ -171,12 +169,10 @@ String cacheHomeSlots[HOME_SLOT_COUNT];
 enum Page {
   PAGE_HOME = 0,
   PAGE_WEATHER = 1,
-  PAGE_NOTES = 2,
-  PAGE_STATUS = 3,
-  PAGE_CRYPTO = 4,
-  PAGE_FUEL = 5
+  PAGE_CRYPTO = 2,
+  PAGE_FUEL = 3
 };
-const int TOTAL_PAGES = 6;
+const int TOTAL_PAGES = 4;
 
 Page currentPage = PAGE_HOME;
 Page lastDrawnPage = (Page)-1;
@@ -217,8 +213,6 @@ String lastWindText = "";
 String lastWindDirText = "";
 String lastNextSunLabel = "";
 String lastNextSunTime = "";
-String lastNotesText = "";
-String lastNetworkToggleText = "";
 
 String lastBtcPrice = "--";
 String lastEthPrice = "--";
@@ -563,21 +557,6 @@ static int minutesNowLocal() {
   return tmNow.tm_hour * 60 + tmNow.tm_min;
 }
 
-static String wifiStatusText() {
-  if (!wifiEnabled) return "Disabled";
-  return WiFi.status() == WL_CONNECTED ? "Online" : "Offline";
-}
-
-static String signalText() {
-  if (!wifiEnabled || WiFi.status() != WL_CONNECTED) return "-- dBm";
-  return String(WiFi.RSSI()) + " dBm";
-}
-
-static String ipText() {
-  if (!wifiEnabled || WiFi.status() != WL_CONNECTED) return "-";
-  return WiFi.localIP().toString();
-}
-
 static bool useUsRegionFormat() {
   return regionFormatKey == "us";
 }
@@ -694,25 +673,6 @@ static String uvLevelText() {
   return "Extreme";
 }
 
-static uint16_t statusColor() {
-  if (textColorKey != "standard") return COL_TEXT;
-  if (!wifiEnabled) return COL_YELLOW;
-  return WiFi.status() == WL_CONNECTED ? COL_GREEN : COL_RED;
-}
-
-static String uptimeText() {
-  unsigned long seconds = millis() / 1000UL;
-  unsigned long days = seconds / 86400UL;
-  seconds %= 86400UL;
-  unsigned long hours = seconds / 3600UL;
-  seconds %= 3600UL;
-  unsigned long minutes = seconds / 60UL;
-
-  if (days > 0) return String(days) + "d " + String(hours) + "h";
-  if (hours > 0) return String(hours) + "h " + String(minutes) + "m";
-  return String(minutes) + "m";
-}
-
 static String nextSunLabel() {
   int nowMin = minutesNowLocal();
   if (sunriseMin < 0 || sunsetMin < 0) return "Sun";
@@ -802,14 +762,6 @@ static String formatElapsedText(unsigned long totalSec) {
   if (minutes == 0) return "< 1 minute elapsed";
   if (minutes == 1) return "1 minute elapsed";
   return String(minutes) + " minutes elapsed";
-}
-
-static String lastSyncText() {
-  if (lastSyncTime <= 0) return "Sync --:--";
-
-  struct tm tmSync;
-  localtime_r(&lastSyncTime, &tmSync);
-  return "Sync " + formatClockParts(tmSync, false);
 }
 
 static String weekNumberText() {
@@ -1063,7 +1015,6 @@ void loadStoredSettings() {
   String bg     = prefs.getString("bg", "slate");
   String txt    = prefs.getString("text", "standard");
 
-  notesText        = prefs.getString("notes", "No notes yet.");
   buddyNickname    = prefs.getString("nickname", "");
   locationName     = prefs.getString("locname", "Berlin");
   LAT              = prefs.getFloat("lat", 52.5200f);
@@ -1641,87 +1592,6 @@ void drawMoonIcon(TFT_eSprite& spr, int cx, int cy, uint16_t c) {
   spr.fillCircle(cx + 4, cy - 2, 6, COL_PANEL);
 }
 
-int drawWrappedTextLimited(int x, int y, int maxW, const String& text, int font, uint16_t fg, uint16_t bg, int maxLines) {
-  tft.setTextDatum(TL_DATUM);
-  tft.setTextColor(fg, bg);
-
-  const int lineH = tft.fontHeight(font) + 2;
-  String line = "";
-  String word = "";
-  int linesDrawn = 0;
-
-  auto flushLine = [&]() {
-    if (linesDrawn >= maxLines) return;
-    if (line.length() > 0) tft.drawString(line, x, y, font);
-    y += lineH;
-    line = "";
-    linesDrawn++;
-  };
-
-  auto placeWordOnEmptyLine = [&]() {
-    if (word.length() == 0 || linesDrawn >= maxLines) return;
-
-    while (tft.textWidth(word, font) > maxW && word.length() > 1) {
-      int cut = word.length();
-      while (cut > 1 && tft.textWidth(word.substring(0, cut), font) > maxW) cut--;
-      if (linesDrawn >= maxLines) return;
-      tft.drawString(word.substring(0, cut), x, y, font);
-      y += lineH;
-      linesDrawn++;
-      word = word.substring(cut);
-    }
-
-    if (linesDrawn < maxLines) {
-      line = word;
-      word = "";
-    }
-  };
-
-  auto flushWord = [&]() {
-    if (word.length() == 0 || linesDrawn >= maxLines) return;
-
-    if (line.length() == 0) {
-      placeWordOnEmptyLine();
-      return;
-    }
-
-    String candidate = line + " " + word;
-    if (tft.textWidth(candidate, font) <= maxW) {
-      line = candidate;
-      word = "";
-      return;
-    }
-
-    flushLine();
-    placeWordOnEmptyLine();
-  };
-
-  for (int i = 0; i < (int)text.length(); i++) {
-    if (linesDrawn >= maxLines) break;
-    char c = text[i];
-
-    if (c == '\n') {
-      flushWord();
-      flushLine();
-      continue;
-    }
-
-    if (c == ' ') {
-      flushWord();
-      continue;
-    }
-
-    word += c;
-  }
-
-  if (linesDrawn < maxLines) {
-    flushWord();
-    if (line.length() > 0) flushLine();
-  }
-
-  return y;
-}
-
 // =========================================================
 // HOME SPRITES
 // =========================================================
@@ -2195,115 +2065,10 @@ void updateWeatherDynamic() {
   }
 }
 
-void drawNotesPageFull() {
-  tft.fillScreen(COL_BG);
-  drawTopBar("Notes");
-  drawNavBar();
-
-  drawCard(8, 42, 224, 226, true);
-
-  pageDirty = false;
-  lastDrawnPage = PAGE_NOTES;
-  lastNotesText = "";
-}
-
-void updateNotesDynamic() {
-  if (notesText != lastNotesText || notesDirty) {
-    tft.fillRect(18, 54, 204, 196, COL_PANEL);
-    drawWrappedTextLimited(18, 54, 198, notesText, 2, COL_TEXT, COL_PANEL, 12);
-    lastNotesText = notesText;
-    notesDirty = false;
-  }
-}
-
-void drawStatusPageFull() {
-  tft.fillScreen(COL_BG);
-  drawTopBar("Status");
-  drawNavBar();
-
-  drawCard(8, PAGE_ROW1_Y, 108, PAGE_WIDGET_H, true);
-  drawCard(124, PAGE_ROW1_Y, 108, PAGE_WIDGET_H, true);
-  drawCard(8, PAGE_ROW2_Y, 224, PAGE_WIDGET_H, true);
-  drawCard(8, PAGE_ROW3_Y, 108, PAGE_WIDGET_H, true);
-  drawCard(124, PAGE_ROW3_Y, 108, PAGE_WIDGET_H, true);
-
-  pageDirty = false;
-  lastDrawnPage = PAGE_STATUS;
-
-  lastWifiText = "";
-  lastSignalText = "";
-  lastIpText = "";
-  lastUptimeText = "";
-  lastNetworkToggleText = "";
-}
-
-void updateStatusDynamic() {
-  String w = wifiStatusText();
-  if (w != lastWifiText) {
-    tft.fillRect(18, PAGE_ROW1_Y + 24, 88, 30, COL_PANEL);
-    tft.setTextColor(COL_DIM, COL_PANEL);
-    tft.drawString("WiFi", 18, PAGE_ROW1_Y + 8, 2);
-    tft.setTextColor(statusColor(), COL_PANEL);
-    tft.drawString(w, 18, PAGE_ROW1_Y + 32, 2);
-    lastWifiText = w;
-  }
-
-  String s = signalText();
-  if (s != lastSignalText) {
-    tft.fillRect(134, PAGE_ROW1_Y + 30, 88, 24, COL_PANEL);
-    tft.setTextColor(COL_DIM, COL_PANEL);
-    tft.drawString("Signal", 134, PAGE_ROW1_Y + 8, 2);
-    tft.setTextColor(COL_TEXT, COL_PANEL);
-    tft.drawString(s, 134, PAGE_ROW1_Y + 30, 4);
-    lastSignalText = s;
-  }
-
-  String ip = ipText();
-  if (ip != lastIpText) {
-    tft.fillRect(18, PAGE_ROW2_Y + 30, 200, 18, COL_PANEL);
-    tft.setTextColor(COL_DIM, COL_PANEL);
-    tft.drawString("IP address", 18, PAGE_ROW2_Y + 8, 2);
-    tft.setTextColor(COL_TEXT, COL_PANEL);
-    tft.drawString(ip, 18, PAGE_ROW2_Y + 30, 2);
-    lastIpText = ip;
-  }
-
-  String up = uptimeText();
-  String upCombined = up + "|" + lastSyncText();
-  if (upCombined != lastUptimeText) {
-    tft.fillRect(18, PAGE_ROW3_Y + 26, 88, 26, COL_PANEL);
-    tft.setTextColor(COL_DIM, COL_PANEL);
-    tft.drawString("Uptime", 18, PAGE_ROW3_Y + 10, 2);
-    tft.setTextColor(COL_TEXT, COL_PANEL);
-    tft.drawString(up, 18, PAGE_ROW3_Y + 26, 2);
-    tft.setTextColor(COL_DIM, COL_PANEL);
-    tft.drawString(lastSyncText(), 18, PAGE_ROW3_Y + 42, 1);
-    lastUptimeText = upCombined;
-  }
-
-  String networkLabel = wifiEnabled ? "Enabled" : "Disabled";
-  if (networkLabel != lastNetworkToggleText) {
-    uint16_t btnBg = wifiEnabled ? COL_ACCENT : COL_PANEL_ALT;
-    uint16_t btnFg = wifiEnabled ? TFT_BLACK : COL_TEXT;
-    uint16_t btnStroke = wifiEnabled ? COL_ACCENT : COL_STROKE;
-
-    tft.fillRect(132, PAGE_ROW3_Y + 8, 92, 42, COL_PANEL);
-    tft.setTextColor(COL_DIM, COL_PANEL);
-    tft.drawString("Network", 134, PAGE_ROW3_Y + 10, 2);
-    tft.fillRoundRect(134, PAGE_ROW3_Y + 30, 88, 22, 8, btnBg);
-    tft.drawRoundRect(134, PAGE_ROW3_Y + 30, 88, 22, 8, btnStroke);
-    tft.setTextColor(btnFg, btnBg);
-    tft.drawCentreString(networkLabel.c_str(), 178, PAGE_ROW3_Y + 32, 2);
-    lastNetworkToggleText = networkLabel;
-  }
-}
-
 void drawCurrentPageFull() {
   switch (currentPage) {
     case PAGE_HOME:    drawHomePageFull(); break;
     case PAGE_WEATHER: drawWeatherPageFull(); break;
-    case PAGE_NOTES:   drawNotesPageFull(); break;
-    case PAGE_STATUS:  drawStatusPageFull(); break;
     case PAGE_CRYPTO:  drawPageCryptoFull(); break;
     case PAGE_FUEL:    drawPageFuelFull(); break;
   }
@@ -2326,8 +2091,6 @@ void updateCurrentPageDynamic() {
   switch (currentPage) {
     case PAGE_HOME:    updateHomeDynamic(); break;
     case PAGE_WEATHER: updateWeatherDynamic(); break;
-    case PAGE_NOTES:   updateNotesDynamic(); break;
-    case PAGE_STATUS:  updateStatusDynamic(); break;
     case PAGE_CRYPTO:  
       ensureCrypto();
       if (dataDirty) {
@@ -2428,17 +2191,6 @@ bool handleTimerDoneDialogTouch(int x, int y) {
   if (!timerDoneDialogOpen) return false;
   dismissTimerDoneDialog();
   return true;
-}
-
-bool handleStatusTouch(int x, int y) {
-  if (currentPage != PAGE_STATUS) return false;
-
-  if (x >= 124 && x < 232 && y >= 198 && y < 268) {
-    setWifiEnabled(!wifiEnabled);
-    return true;
-  }
-
-  return false;
 }
 
 void drawCryptoCard(int i) {
@@ -2665,7 +2417,7 @@ void handleRoot() {
   page += "<div style='display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;'>";
   page += "<div>";
   page += "<h1>Crypto Display</h1>";
-  page += "<p>" + String(isUa ? "Налаштуйте Crypto Display як власного настільного помічника з віджетами, нотатками, кольорами та розумними щоденними інструментами." : "Shape Crypto Display into your own desk companion with widgets, notes, colors, and smart daily tools.") + "</p>";
+  page += "<p>" + String(isUa ? "Налаштуйте Crypto Display як власного настільного помічника з крипто-трекером, віджетами, кольорами та розумними інструментами." : "Shape Crypto Display into your own desk companion with live crypto tracking, widgets, colors, and smart tools.") + "</p>";
   page += "</div>";
   page += "<div style='display:flex;align-items:center;gap:10px;'>";
   page += "<label class='label' style='margin:0;font-size:13px;'>" + String(isUa ? "Мова:" : "Language:") + "</label>";
@@ -2681,17 +2433,6 @@ void handleRoot() {
 
   page += "<form id='settingsForm' method='POST' action='/save'>";
   page += "<div class='layout'><div class='stack'>";
-
-  page += "<div class='panel' data-panel='notes'>";
-  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>" + String(isUa ? "Нотатки" : "Notes") + "</h2><span class='panel-chevron'>&#9662;</span></button>";
-  page += "<div class='panel-body'>";
-  page += "<p>" + String(isUa ? "Короткі текстові нотатки, що миттєво синхронізуються на екран." : "Short notes synced to the device.") + "</p>";
-  page += "<label class='label'>" + String(isUa ? "Текст нотаток" : "Notes") + "</label>";
-  page += "<textarea name='notes' maxlength='700'>";
-  page += htmlEscape(notesText);
-  page += "</textarea>";
-  page += "<div class='muted'>" + String(isUa ? "Збережені нотатки одразу відображаються на екрані." : "Saved notes show up right away.") + "</div>";
-  page += "</div></div>";
 
   page += "<div class='panel' data-panel='theme'>";
   page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>" + String(isUa ? "Тема та кольори" : "Theme and color") + "</h2><span class='panel-chevron'>&#9662;</span></button>";
@@ -2894,7 +2635,6 @@ void handleSave() {
     }
   }
 
-  String newNotes  = server.hasArg("notes") ? server.arg("notes") : notesText;
   String newAccent = server.hasArg("accent") ? server.arg("accent") : "cyan";
   String newBg     = server.hasArg("bg") ? server.arg("bg") : "slate";
   String newText   = server.hasArg("text") ? server.arg("text") : "standard";
@@ -2913,12 +2653,9 @@ void handleSave() {
   float newLat = server.hasArg("lat") ? server.arg("lat").toFloat() : LAT;
   float newLng = server.hasArg("lng") ? server.arg("lng").toFloat() : LNG;
 
-  newNotes.trim();
   newLoc.trim();
   newNickname.trim();
 
-  if (newNotes.length() == 0) newNotes = "No notes yet.";
-  if (newNotes.length() > 700) newNotes = newNotes.substring(0, 700);
   if (newLoc.length() == 0) newLoc = "Unknown";
   if (newNickname.length() > 24) newNickname = newNickname.substring(0, 24);
   if (newUnits != "metric" && newUnits != "imperial") newUnits = "metric";
@@ -2934,7 +2671,6 @@ void handleSave() {
     (fabsf(newLng - LNG) > 0.0001f) ||
     (newLoc != locationName);
 
-  notesText = newNotes;
   buddyNickname = newNickname;
   locationName = newLoc;
   LAT = newLat;
@@ -3014,7 +2750,6 @@ void handleSave() {
     mqttPass = server.arg("mqtt_pass");
     prefs.putString("mqtt_pwd", mqttPass);
   }
-  prefs.putString("notes", notesText);
   prefs.putString("accent", newAccent);
   prefs.putString("bg", newBg);
   prefs.putString("text", newText);
@@ -3041,7 +2776,6 @@ void handleSave() {
   applyDeviceTimezoneByKey(timezoneKey);
   if (!sleepDimmed && !sleepOff) setBacklight(BL_FULL);
 
-  notesDirty = true;
   pageDirty = true;
   dataDirty = true;
 
@@ -3303,7 +3037,6 @@ void setup() {
   if (!apModeActive) {
     pageDirty = true;
     dataDirty = true;
-    notesDirty = true;
 
     drawCurrentPageFull();
     updateCurrentPageDynamic();
@@ -3366,12 +3099,12 @@ void loop() {
         if (!manualDimMode) {
           wakeDisplay();
         } else {
-          if (!handleHomeTouch(tx, ty) && !handleStatusTouch(tx, ty)) {
+          if (!handleHomeTouch(tx, ty)) {
             handleNavTouch(tx, ty);
           }
         }
       } else {
-        if (!handleHomeTouch(tx, ty) && !handleStatusTouch(tx, ty)) {
+        if (!handleHomeTouch(tx, ty)) {
           handleNavTouch(tx, ty);
         }
       }

@@ -13,7 +13,7 @@
 - ⏱️ **Clock & Productivity**: NTP time synchronization, regional date formats (Europe 24h / US 12h), customizable focus timer with presets.
 - ⛅ **Weather & Astronomy**: Live outdoor temperature, precipitation, wind speed & direction, UV index, geomagnetic KP index, and automatic next sunrise/sunset tracking.
 - 🛢️ **Fuel & Commodities**: Real-time Brent Crude Oil price (Yahoo Finance) + Ukraine fuel market prices (A-95 & Diesel via Minfin).
-- 🌐 **Built-in Web Portal**: Modern browser dashboard at `http://<device-ip>` to configure tokens, themes, accent colors, units, notes, and layout without recompiling.
+- 🌐 **Built-in Web Portal**: Modern browser dashboard at `http://<device-ip>` to configure tokens, themes, accent colors, units, and widgets without recompiling.
 - 📡 **Smart MQTT Client**: Non-blocking telemetry reporting status to Home Assistant or Mosquitto.
 - 🚀 **Flicker-Free UI**: Smooth, card-based dynamic updates without full-screen blanking.
 - 💻 **PlatformIO & Arduino IDE Support**: Ready-to-build with PlatformIO (zero library setup required) or Arduino IDE.
