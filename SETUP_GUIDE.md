@@ -1,6 +1,6 @@
-# Deskbuddy Setup Guide
+# Crypto Display Setup Guide
 
-This guide explains how to install and upload the Deskbuddy software to a compatible ESP32 touchscreen board using **Arduino IDE**.
+This guide explains how to install and upload the Crypto Display software to a compatible ESP32 touchscreen board using **Arduino IDE**.
 
 
 ## What You Need
@@ -11,11 +11,11 @@ Before you begin, make sure you have:
 - A USB cable with data support
 - Arduino IDE installed
 - Access to a WiFi network
-- The Deskbuddy source code
+- The Crypto Display source code
 
 ## 1. Install ESP32 Board Support
 
-Deskbuddy is built for ESP32, so you first need to install the ESP32 board package in Arduino IDE.
+Crypto Display is built for ESP32, so you first need to install the ESP32 board package in Arduino IDE.
 
 1. Open **Arduino IDE**
 2. Go to **Tools > Board > Boards Manager**
@@ -53,7 +53,7 @@ The following are normally included automatically with the ESP32 board package:
 
 This is the most important step for getting the display to work correctly.
 
-Deskbuddy uses the **TFT_eSPI** library, and you will most likely need to replace or edit the `User_Setup` file inside the TFT_eSPI library folder so it matches your display.
+Crypto Display uses the **TFT_eSPI** library, and you will most likely need to replace or edit the `User_Setup` file inside the TFT_eSPI library folder so it matches your display.
 
 If the TFT_eSPI setup is wrong, you may see problems like:
 
@@ -76,13 +76,13 @@ Then either:
 
 If you are using a specific ESP32 touchscreen board variant, it is a good idea to keep a backup of your working `User_Setup.h`.
 
-## 4. Open the Deskbuddy Code
+## 4. Open the Crypto Display Code
 
-Open the Deskbuddy project in Arduino IDE.
+Open the Crypto Display project in Arduino IDE.
 
 For the public version, use:
 
-- [desk_buddy_github.cpp]
+- [crypto_display.cpp]
 
 If you rename the file or convert it to an `.ino`, that is also fine as long as the project builds correctly in Arduino IDE.
 
@@ -196,7 +196,7 @@ This makes it easy to personalize the device without editing the code every time
 
 ## Final Notes
 
-Deskbuddy is designed to be easy to customize, but exact setup details may vary depending on your ESP32 touchscreen board version.
+Crypto Display is designed to be easy to customize, but exact setup details may vary depending on your ESP32 touchscreen board version.
 
 For most users, the **TFT_eSPI `User_Setup.h` configuration is the most important part** of the installation.
 

@@ -1,4 +1,4 @@
-// Deskbuddy V.8
+// Crypto Display V.8
 // Nav: Home / Weather / Notes / Status
 // Full version
 // - KP dots replaced with Low / Medium / High / Extreme text
@@ -19,12 +19,12 @@
 #include <SPI.h>
 #include <XPT2046_Touchscreen.h>
 #include <math.h>
+#include "Secrets.h"
 
 // =========================================================
 // WIFI
 // =========================================================
-const char* WIFI_SSID = "YOUR_WIFI_SSID";       // Replace with your WiFi network name
-const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";   // Replace with your WiFi password
+// Credentials moved to Secrets.h
 
 // =========================================================
 // DISPLAY / TOUCH
@@ -137,7 +137,9 @@ enum HomeWidgetType {
   HOME_WIDGET_KP,
   HOME_WIDGET_UV,
   HOME_WIDGET_WIND,
-  HOME_WIDGET_SUN
+  HOME_WIDGET_SUN,
+  HOME_WIDGET_BTC,
+  HOME_WIDGET_ETH
 };
 
 const int HOME_SLOT_COUNT = 4;
@@ -157,8 +159,11 @@ enum Page {
   PAGE_HOME = 0,
   PAGE_WEATHER = 1,
   PAGE_NOTES = 2,
-  PAGE_STATUS = 3
+  PAGE_STATUS = 3,
+  PAGE_CRYPTO = 4,
+  PAGE_FUEL = 5
 };
+const int TOTAL_PAGES = 6;
 
 Page currentPage = PAGE_HOME;
 Page lastDrawnPage = (Page)-1;
@@ -202,6 +207,9 @@ String lastNextSunTime = "";
 String lastNotesText = "";
 String lastNetworkToggleText = "";
 
+String lastBtcPrice = "--";
+String lastEthPrice = "--";
+
 const char* homeWidgetKey(HomeWidgetType type) {
   switch (type) {
     case HOME_WIDGET_WEEK:    return "week";
@@ -212,6 +220,8 @@ const char* homeWidgetKey(HomeWidgetType type) {
     case HOME_WIDGET_UV:      return "uv";
     case HOME_WIDGET_WIND:    return "wind";
     case HOME_WIDGET_SUN:     return "sun";
+    case HOME_WIDGET_BTC:     return "btc";
+    case HOME_WIDGET_ETH:     return "eth";
     default:                  return "week";
   }
 }
@@ -226,6 +236,8 @@ const char* homeWidgetLabel(HomeWidgetType type) {
     case HOME_WIDGET_UV:      return "UV index";
     case HOME_WIDGET_WIND:    return "Wind";
     case HOME_WIDGET_SUN:     return "Sun event";
+    case HOME_WIDGET_BTC:     return "Bitcoin";
+    case HOME_WIDGET_ETH:     return "Ethereum";
     default:                  return "Week";
   }
 }
@@ -239,6 +251,8 @@ HomeWidgetType homeWidgetFromKey(const String& key) {
   if (key == "uv") return HOME_WIDGET_UV;
   if (key == "wind") return HOME_WIDGET_WIND;
   if (key == "sun") return HOME_WIDGET_SUN;
+  if (key == "btc") return HOME_WIDGET_BTC;
+  if (key == "eth") return HOME_WIDGET_ETH;
   return HOME_WIDGET_WEEK;
 }
 
@@ -388,7 +402,9 @@ void appendHomeWidgetOptions(String& page, const String& selectedKey) {
     HOME_WIDGET_KP,
     HOME_WIDGET_UV,
     HOME_WIDGET_WIND,
-    HOME_WIDGET_SUN
+    HOME_WIDGET_SUN,
+    HOME_WIDGET_BTC,
+    HOME_WIDGET_ETH
   };
 
   for (HomeWidgetType type : types) {
@@ -439,7 +455,12 @@ static const uint32_t WEATHER_INTERVAL_SEC = 10 * 60;
 
 // KP-index
 static float kpIndex = NAN;
+static float btcUsd = NAN;
+static float ethUsd = NAN;
+static time_t lastSunFetch = 0;
 static time_t lastKpFetch = 0;
+static time_t lastCryptoFetch = 0;
+const int CRYPTO_INTERVAL_SEC = 300;
 static const uint32_t KP_INTERVAL_SEC = 10 * 60;
 
 // Sunrise / Sunset
@@ -762,7 +783,7 @@ static String timerDoneCountdownText() {
 }
 
 static String homeTitleText() {
-  return buddyNickname.length() > 0 ? buddyNickname : "Deskbuddy";
+  return buddyNickname.length() > 0 ? buddyNickname : "Crypto Display";
 }
 
 int sanitizeTimerMinutes(int value) {
@@ -988,7 +1009,7 @@ void applyTextColorByKey(const String& key) {
 }
 
 void loadStoredSettings() {
-  prefs.begin("deskbuddy", false);
+  prefs.begin("Crypto Display", false);
 
   String accent = prefs.getString("accent", "cyan");
   String bg     = prefs.getString("bg", "slate");
@@ -1030,11 +1051,14 @@ void resetDataCaches() {
   windSpeedMs = NAN;
   windDirectionDeg = NAN;
   kpIndex = NAN;
+  btcUsd = NAN;
+  ethUsd = NAN;
   sunriseMin = -1;
-  sunsetMin = -1;
+  sunsetMin  = -1;
   lastSunYmd = -1;
-  lastWeatherFetch = 0;
+  lastSunFetch = 0;
   lastKpFetch = 0;
+  lastCryptoFetch = 0;
   dataDirty = true;
   pageDirty = true;
 }
@@ -1164,6 +1188,17 @@ void ensureSunTimesForToday() {
   }
 }
 
+void ensureSun() {
+  ensureSunTimesForToday();
+  time_t nowT = time(nullptr);
+  if (lastSunFetch == 0 && WiFi.status() == WL_CONNECTED) {
+    if (fetchSunriseSunset()) {
+      lastSunFetch = nowT;
+      dataDirty = true;
+    }
+  }
+}
+
 bool fetchWeather() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
@@ -1288,6 +1323,53 @@ void ensureKpIndex() {
   }
 }
 
+bool fetchCrypto() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  if (!http.begin(client, "https://api.binance.com/api/v3/ticker/price?symbols=%5B%22BTCUSDT%22,%22ETHUSDT%22%5D")) {
+    return false;
+  }
+  
+  if (String(BINANCE_API_KEY).length() > 0) {
+    http.addHeader("X-MBX-APIKEY", BINANCE_API_KEY);
+  }
+
+  int code = http.GET();
+  if (code != 200) {
+    http.end();
+    return false;
+  }
+
+  String body = http.getString();
+  http.end();
+
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, body)) return false;
+
+  for (JsonObject item : doc.as<JsonArray>()) {
+    String symbol = item["symbol"].as<String>();
+    float price = item["price"].as<float>();
+    if (symbol == "BTCUSDT") btcUsd = price;
+    if (symbol == "ETHUSDT") ethUsd = price;
+  }
+
+  lastCryptoFetch = time(nullptr);
+  lastSyncTime = lastCryptoFetch;
+  return true;
+}
+
+void ensureCrypto() {
+  time_t nowT = time(nullptr);
+  if ((isnan(btcUsd) || isnan(ethUsd) || (nowT - lastCryptoFetch) > CRYPTO_INTERVAL_SEC) &&
+      WiFi.status() == WL_CONNECTED) {
+    if (fetchCrypto()) dataDirty = true;
+  }
+}
+
 // =========================================================
 // DRAW HELPERS
 // =========================================================
@@ -1327,25 +1409,19 @@ void drawNavBar() {
   tft.fillRect(0, y, SCREEN_W, NAV_H, COL_PANEL_ALT);
   tft.drawFastHLine(0, y, SCREEN_W, COL_STROKE);
 
-  const int btnW = SCREEN_W / 4;
-  const char* names[4] = {"Home", "Weather", "Notes", "Status"};
+  int dotRadius = 4;
+  int spacing = 18;
+  int startX = (SCREEN_W - (TOTAL_PAGES - 1) * spacing) / 2;
 
-  for (int i = 0; i < 4; i++) {
-    int bx = i * btnW;
-    bool active = ((int)currentPage == i);
-
-    uint16_t bg = active ? COL_ACCENT : COL_PANEL;
-    uint16_t fg = active ? TFT_BLACK : COL_TEXT;
-
-    tft.fillRoundRect(bx + 4, y + 6, btnW - 8, NAV_H - 12, 8, bg);
-    tft.drawRoundRect(bx + 4, y + 6, btnW - 8, NAV_H - 12, 8, active ? COL_ACCENT : COL_STROKE);
-
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(fg, bg);
-    tft.drawString(names[i], bx + btnW / 2, y + NAV_H / 2, 1);
+  for (int i = 0; i < TOTAL_PAGES; i++) {
+    int cx = startX + i * spacing;
+    int cy = y + NAV_H / 2;
+    if (i == (int)currentPage) {
+      tft.fillCircle(cx, cy, dotRadius, COL_ACCENT);
+    } else {
+      tft.fillCircle(cx, cy, dotRadius, COL_STROKE);
+    }
   }
-
-  tft.setTextDatum(TL_DATUM);
 }
 
 void makeSpriteCard(TFT_eSprite& spr, int w, int h, bool accent = false) {
@@ -1668,6 +1744,12 @@ void drawHomeSlotWidget(int slot, bool force = false) {
       break;
     case HOME_WIDGET_SUN:
       drawSunEventWidget(x, y, w, h, cacheHomeSlots[slot], force);
+      break;
+    case HOME_WIDGET_BTC:
+      drawWeatherStyleMetricSprite(x, y, w, h, "BTC Price", isnan(btcUsd) ? "--" : String(btcUsd, 0) + "$", cacheHomeSlots[slot], force);
+      break;
+    case HOME_WIDGET_ETH:
+      drawWeatherStyleMetricSprite(x, y, w, h, "ETH Price", isnan(ethUsd) ? "--" : String(ethUsd, 0) + "$", cacheHomeSlots[slot], force);
       break;
   }
 }
@@ -2158,15 +2240,22 @@ bool handleStatusTouch(int x, int y) {
 // NAVIGATION
 // =========================================================
 void handleNavTouch(int x, int y) {
-  if (y < SCREEN_H - NAV_H) return;
+  // Navigation is now done by tapping left or right edges of the screen
+  // Ignore header touches
+  if (y < 40) return;
 
-  int btnW = SCREEN_W / 4;
-  int idx = x / btnW;
-  if (idx < 0 || idx > 3) return;
-
-  Page newPage = (Page)idx;
-  if (newPage != currentPage) {
-    currentPage = newPage;
+  // Left 30% of screen = previous
+  if (x < SCREEN_W * 0.3) {
+    int nextIdx = (int)currentPage - 1;
+    if (nextIdx < 0) nextIdx = TOTAL_PAGES - 1;
+    currentPage = (Page)nextIdx;
+    pageDirty = true;
+  } 
+  // Right 30% of screen = next
+  else if (x > SCREEN_W * 0.7) {
+    int nextIdx = (int)currentPage + 1;
+    if (nextIdx >= TOTAL_PAGES) nextIdx = 0;
+    currentPage = (Page)nextIdx;
     pageDirty = true;
   }
 }
@@ -2194,7 +2283,7 @@ void handleRoot() {
   page += "<!doctype html><html><head>";
   page += "<meta charset='utf-8'>";
   page += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
-  page += "<title>Deskbuddy</title>";
+  page += "<title>Crypto Display</title>";
   page += "<style>";
   page += ":root{color-scheme:dark;}";
   page += "body{margin:0;background:linear-gradient(180deg,#0b1018 0%,#111827 100%);color:#edf2f7;font-family:system-ui,sans-serif;}";
@@ -2246,8 +2335,8 @@ void handleRoot() {
   page += "@media(max-width:820px){.layout{grid-template-columns:1fr;}.grid,.grid-3,.timer-slot-grid{grid-template-columns:1fr;}.color-row{grid-template-columns:1fr;}}";
   page += "</style></head><body><div class='wrap'>";
   page += "<div class='hero'>";
-  page += "<h1>Deskbuddy</h1>";
-  page += "<p>Shape Deskbuddy into your own desk companion with widgets, notes, colors, and smart daily tools.</p>";
+  page += "<h1>Crypto Display</h1>";
+  page += "<p>Shape Crypto Display into your own desk companion with widgets, notes, colors, and smart daily tools.</p>";
   page += "<div class='ip'>ESP IP: ";
   page += WiFi.localIP().toString();
   page += "</div></div>";
@@ -2388,11 +2477,11 @@ void handleRoot() {
 
   page += "</div><div class='stack'>";
 
-  page += "<button type='submit'>Save to Deskbuddy</button>";
+  page += "<button type='submit'>Save to Crypto Display</button>";
   page += "</div></div></form>";
   page += "<script>";
   page += "var colorNames={accent:{standard:'Standard',ice:'Ice',white:'White',cyan:'Cyan',mint:'Mint',green:'Green',blue:'Blue',purple:'Purple',pink:'Pink',orange:'Orange',amber:'Amber',red:'Red'},text:{standard:'Standard',ice:'Ice',white:'White',cyan:'Cyan',mint:'Mint',green:'Green',blue:'Blue',purple:'Purple',pink:'Pink',orange:'Orange',amber:'Amber',red:'Red'},bg:{slate:'Slate',deep:'Deep black',nordic:'Nordic blue',forest:'Forest',coffee:'Coffee',soft:'Soft dark',midnight:'Midnight',graphite:'Graphite',garnet:'Garnet',ochre:'Ochre'}};";
-  page += "var panelStorageKey='deskbuddy-panel-state-v1';";
+  page += "var panelStorageKey='Crypto Display-panel-state-v1';";
   page += "document.querySelectorAll('.swatch input').forEach(function(input){";
   page += "input.addEventListener('change',function(){";
   page += "document.querySelectorAll('.swatch input[name=\"'+input.name+'\"]').forEach(function(peer){";
@@ -2595,8 +2684,10 @@ void updateWiFiConnectionState() {
   if (status == WL_CONNECTED) {
     wifiConnectInProgress = false;
     ensureSunTimesForToday();
+    ensureSun();
     ensureWeather();
     ensureKpIndex();
+    ensureCrypto();
     dataDirty = true;
     pageDirty = true;
     return;
@@ -2645,7 +2736,7 @@ void setup() {
 
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.drawString("Booting Deskbuddy...", 10, 10, 2);
+  tft.drawString("Booting Crypto Display...", 10, 10, 2);
 
   touchSPI.begin(T_SCK, T_MISO, T_MOSI);
   pinMode(TOUCH_CS, OUTPUT);
@@ -2662,8 +2753,9 @@ void setup() {
   waitForNtpTime();
 
   ensureSunTimesForToday();
-  ensureWeather();
+  ensureSun();
   ensureKpIndex();
+  ensureCrypto();
 
   setupWebServer();
 
@@ -2677,7 +2769,7 @@ void setup() {
   lastClockTick = millis();
   lastDataTick = millis();
 
-  Serial.print("Deskbuddy web: http://");
+  Serial.print("Crypto Display web: http://");
   Serial.println(WiFi.localIP());
 }
 
