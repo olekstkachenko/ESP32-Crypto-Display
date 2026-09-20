@@ -19,6 +19,7 @@
 #include <SPI.h>
 #include <XPT2046_Touchscreen.h>
 #include <math.h>
+#include <PubSubClient.h>
 #include "Secrets.h"
 
 // =========================================================
@@ -455,8 +456,17 @@ static const uint32_t WEATHER_INTERVAL_SEC = 10 * 60;
 
 // KP-index
 static float kpIndex = NAN;
-static float btcUsd = NAN;
-static float ethUsd = NAN;
+// Crypto Variables
+String cryptoSymbols[5] = {"BTCUSDT", "ETHUSDT", "XRPUSDT", "LTCUSDT", "SOLUSDT"};
+float cryptoPrices[5] = {NAN, NAN, NAN, NAN, NAN};
+float cryptoChanges[5] = {NAN, NAN, NAN, NAN, NAN};
+
+// Fuel Variables
+static float brentPrice = NAN;
+static float a95Price = NAN;
+static float dieselPrice = NAN;
+static time_t lastFuelFetch = 0;
+const int FUEL_INTERVAL_SEC = 3600;
 static time_t lastSunFetch = 0;
 static time_t lastKpFetch = 0;
 static time_t lastCryptoFetch = 0;
@@ -1037,6 +1047,11 @@ void loadStoredSettings() {
     timerPresetMin[i] = sanitizeTimerMinutes(prefs.getInt(key.c_str(), timerPresetMin[i]));
   }
 
+  for (int i = 0; i < 5; i++) {
+    String key = String("crypto") + String(i);
+    cryptoSymbols[i] = prefs.getString(key.c_str(), cryptoSymbols[i]);
+  }
+
   if (unitKey != "metric" && unitKey != "imperial") unitKey = "metric";
   if (regionFormatKey != "europe" && regionFormatKey != "us") regionFormatKey = "europe";
   buddyNickname.trim();
@@ -1051,8 +1066,10 @@ void resetDataCaches() {
   windSpeedMs = NAN;
   windDirectionDeg = NAN;
   kpIndex = NAN;
-  btcUsd = NAN;
-  ethUsd = NAN;
+  for (int i=0; i<5; i++) {
+    cryptoPrices[i] = NAN;
+    cryptoChanges[i] = NAN;
+  }
   sunriseMin = -1;
   sunsetMin  = -1;
   lastSunYmd = -1;
@@ -1329,8 +1346,17 @@ bool fetchCrypto() {
   WiFiClientSecure client;
   client.setInsecure();
 
+  String symbolsParam = "%5B";
+  for (int i=0; i<5; i++) {
+    symbolsParam += "%22" + cryptoSymbols[i] + "%22";
+    if (i < 4) symbolsParam += ",";
+  }
+  symbolsParam += "%5D";
+
+  String url = "https://api.binance.com/api/v3/ticker/24hr?symbols=" + symbolsParam;
+
   HTTPClient http;
-  if (!http.begin(client, "https://api.binance.com/api/v3/ticker/price?symbols=%5B%22BTCUSDT%22,%22ETHUSDT%22%5D")) {
+  if (!http.begin(client, url)) {
     return false;
   }
   
@@ -1347,14 +1373,21 @@ bool fetchCrypto() {
   String body = http.getString();
   http.end();
 
-  StaticJsonDocument<512> doc;
+  // Binance 24hr ticker for multiple symbols returns an array of objects
+  StaticJsonDocument<2048> doc; // Increased size for 5 tokens
   if (deserializeJson(doc, body)) return false;
 
   for (JsonObject item : doc.as<JsonArray>()) {
     String symbol = item["symbol"].as<String>();
-    float price = item["price"].as<float>();
-    if (symbol == "BTCUSDT") btcUsd = price;
-    if (symbol == "ETHUSDT") ethUsd = price;
+    float price = item["lastPrice"].as<float>();
+    float change = item["priceChangePercent"].as<float>();
+    
+    for (int i=0; i<5; i++) {
+      if (symbol == cryptoSymbols[i]) {
+        cryptoPrices[i] = price;
+        cryptoChanges[i] = change;
+      }
+    }
   }
 
   lastCryptoFetch = time(nullptr);
@@ -1364,9 +1397,71 @@ bool fetchCrypto() {
 
 void ensureCrypto() {
   time_t nowT = time(nullptr);
-  if ((isnan(btcUsd) || isnan(ethUsd) || (nowT - lastCryptoFetch) > CRYPTO_INTERVAL_SEC) &&
+  bool needsFetch = false;
+  for (int i=0; i<5; i++) {
+    if (isnan(cryptoPrices[i])) needsFetch = true;
+  }
+
+  if ((needsFetch || (nowT - lastCryptoFetch) > CRYPTO_INTERVAL_SEC) &&
       WiFi.status() == WL_CONNECTED) {
     if (fetchCrypto()) dataDirty = true;
+  }
+}
+
+bool fetchFuelPrices() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+
+  // 1. Brent Oil
+  if (http.begin(client, "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F")) {
+    if (http.GET() == 200) {
+      String body = http.getString();
+      StaticJsonDocument<2048> doc;
+      if (!deserializeJson(doc, body)) {
+        brentPrice = doc["chart"]["result"][0]["meta"]["regularMarketPrice"].as<float>();
+      }
+    }
+    http.end();
+  }
+
+  // 2. Ukraine Gas
+  if (http.begin(client, "https://index.minfin.com.ua/markets/fuel/")) {
+    if (http.GET() == 200) {
+      String body = http.getString();
+      int idx95 = body.indexOf("А-95");
+      if (idx95 > 0) {
+        int tdIdx = body.indexOf("<big>", idx95);
+        if (tdIdx > 0) {
+          int endIdx = body.indexOf("</big>", tdIdx);
+          String valStr = body.substring(tdIdx + 5, endIdx);
+          valStr.replace(",", ".");
+          a95Price = valStr.toFloat();
+        }
+      }
+      int idxDiesel = body.indexOf("Дизельне паливо");
+      if (idxDiesel > 0) {
+        int tdIdx = body.indexOf("<big>", idxDiesel);
+        if (tdIdx > 0) {
+          int endIdx = body.indexOf("</big>", tdIdx);
+          String valStr = body.substring(tdIdx + 5, endIdx);
+          valStr.replace(",", ".");
+          dieselPrice = valStr.toFloat();
+        }
+      }
+    }
+    http.end();
+  }
+
+  lastFuelFetch = time(nullptr);
+  return true;
+}
+
+void ensureFuel() {
+  time_t nowT = time(nullptr);
+  if ((isnan(brentPrice) || (nowT - lastFuelFetch) > FUEL_INTERVAL_SEC) && WiFi.status() == WL_CONNECTED) {
+    if (fetchFuelPrices()) dataDirty = true;
   }
 }
 
@@ -1746,10 +1841,12 @@ void drawHomeSlotWidget(int slot, bool force = false) {
       drawSunEventWidget(x, y, w, h, cacheHomeSlots[slot], force);
       break;
     case HOME_WIDGET_BTC:
-      drawWeatherStyleMetricSprite(x, y, w, h, "BTC Price", isnan(btcUsd) ? "--" : String(btcUsd, 0) + "$", cacheHomeSlots[slot], force);
+      drawWeatherStyleMetricSprite(x, y, w, h, "BTC Price", isnan(cryptoPrices[0]) ? "--" : 
+String(cryptoPrices[0], 0) + "$", cacheHomeSlots[slot], force);
       break;
     case HOME_WIDGET_ETH:
-      drawWeatherStyleMetricSprite(x, y, w, h, "ETH Price", isnan(ethUsd) ? "--" : String(ethUsd, 0) + "$", cacheHomeSlots[slot], force);
+      drawWeatherStyleMetricSprite(x, y, w, h, "ETH Price", isnan(cryptoPrices[1]) ? "--" : 
+String(cryptoPrices[1], 0) + "$", cacheHomeSlots[slot], force);
       break;
   }
 }
@@ -2115,6 +2212,8 @@ void drawCurrentPageFull() {
     case PAGE_WEATHER: drawWeatherPageFull(); break;
     case PAGE_NOTES:   drawNotesPageFull(); break;
     case PAGE_STATUS:  drawStatusPageFull(); break;
+    case PAGE_CRYPTO:  drawPageCryptoFull(); break;
+    case PAGE_FUEL:    drawPageFuelFull(); break;
   }
 
   if (focusMenuOpen && currentPage == PAGE_HOME) drawFocusMenuOverlay(true);
@@ -2137,6 +2236,19 @@ void updateCurrentPageDynamic() {
     case PAGE_WEATHER: updateWeatherDynamic(); break;
     case PAGE_NOTES:   updateNotesDynamic(); break;
     case PAGE_STATUS:  updateStatusDynamic(); break;
+    case PAGE_CRYPTO:  
+      if (dataDirty) {
+        drawPageCryptoFull();
+        dataDirty = false;
+      }
+      break;
+    case PAGE_FUEL:
+      ensureFuel();
+      if (dataDirty) {
+        drawPageFuelFull();
+        dataDirty = false;
+      }
+      break;
   }
 }
 
@@ -2234,6 +2346,91 @@ bool handleStatusTouch(int x, int y) {
   }
 
   return false;
+}
+
+void drawPageCryptoFull() {
+  tft.fillScreen(COL_BG);
+  drawTopBar();
+  drawNavBar(); // This actually draws indicators now
+
+  int startY = 45;
+  int rowH = 46;
+  int padding = 4;
+  
+  for (int i=0; i<5; i++) {
+    int y = startY + i * rowH;
+    tft.fillRoundRect(padding, y, SCREEN_W - padding*2, rowH - padding, 8, COL_PANEL);
+    
+    String displaySym = cryptoSymbols[i];
+    if (displaySym.endsWith("USDT")) displaySym = displaySym.substring(0, displaySym.length() - 4);
+    
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(COL_TEXT, COL_PANEL);
+    tft.drawString(displaySym, padding + 10, y + 10, 2);
+    
+    if (isnan(cryptoPrices[i])) {
+      tft.setTextDatum(TR_DATUM);
+      tft.setTextColor(COL_MUTED, COL_PANEL);
+      tft.drawString("--", SCREEN_W - padding - 10, y + 6, 2);
+    } else {
+      tft.setTextDatum(TR_DATUM);
+      tft.setTextColor(COL_ACCENT, COL_PANEL);
+      tft.drawString(String(cryptoPrices[i], 2) + "$", SCREEN_W - padding - 10, y + 6, 2);
+      
+      float change = cryptoChanges[i];
+      uint16_t cColor = (change >= 0) ? TFT_GREEN : TFT_RED;
+      String cStr = (change >= 0 ? "+" : "") + String(change, 2) + "%";
+      tft.setTextColor(cColor, COL_PANEL);
+      tft.drawString(cStr, SCREEN_W - padding - 10, y + 22, 1);
+    }
+  }
+}
+
+void drawPageFuelFull() {
+  tft.fillScreen(COL_BG);
+  drawHeader("FUEL & COMMODITIES");
+  drawNavBar();
+
+  int padding = 4;
+  int startY = 50;
+
+  // Brent Oil Card
+  tft.fillRoundRect(padding, startY, SCREEN_W - padding*2, 60, 8, COL_PANEL);
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(COL_TEXT, COL_PANEL);
+  tft.drawString("Brent Crude Oil", padding + 10, startY + 10, 2);
+  tft.setTextDatum(TR_DATUM);
+  if (isnan(brentPrice)) {
+    tft.setTextColor(COL_MUTED, COL_PANEL);
+    tft.drawString("--", SCREEN_W - padding - 10, startY + 10, 4);
+  } else {
+    tft.setTextColor(COL_ACCENT, COL_PANEL);
+    tft.drawString(String(brentPrice, 2) + "$", SCREEN_W - padding - 10, startY + 10, 4);
+  }
+
+  // Ukraine Gas Card
+  startY += 70;
+  tft.fillRoundRect(padding, startY, SCREEN_W - padding*2, 100, 8, COL_PANEL);
+  
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(COL_TEXT, COL_PANEL);
+  tft.drawString("Ukraine Fuel Prices", SCREEN_W/2, startY + 10, 2);
+
+  // A-95
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(COL_TEXT, COL_PANEL);
+  tft.drawString("A-95:", padding + 20, startY + 40, 2);
+  tft.setTextDatum(TR_DATUM);
+  tft.setTextColor(COL_ACCENT, COL_PANEL);
+  tft.drawString(isnan(a95Price) ? "--" : String(a95Price, 2) + " UAH", SCREEN_W - padding - 20, startY + 40, 2);
+
+  // Diesel
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(COL_TEXT, COL_PANEL);
+  tft.drawString("Diesel:", padding + 20, startY + 70, 2);
+  tft.setTextDatum(TR_DATUM);
+  tft.setTextColor(COL_ACCENT, COL_PANEL);
+  tft.drawString(isnan(dieselPrice) ? "--" : String(dieselPrice, 2) + " UAH", SCREEN_W - padding - 20, startY + 70, 2);
 }
 
 // =========================================================
@@ -2451,6 +2648,12 @@ void handleRoot() {
   }
   page += "</div>";
   page += "<div style='margin-top:14px;'><span class='settings-title'>Alert behavior</span><label style='display:flex;align-items:center;gap:10px;color:#edf2f7;'><input type='checkbox' name='flashMode' value='1'" + String(flashMode ? " checked" : "") + " style='width:auto;'>Flash screen when timer ends</label></div></div>";
+  
+  page += "<div class='settings-block'><span class='settings-title'>Crypto Page Settings</span><div class='settings-desc'>Enter 5 Binance ticker symbols (e.g., BTCUSDT, DOGEUSDT).</div><div class='timer-slot-grid'>";
+  for (int i = 0; i < 5; i++) {
+    page += "<div class='timer-slot'><div class='timer-slot-head'>Token " + String(i + 1) + "</div><div class='timer-slot-input'><input type='text' name='crypto" + String(i) + "' value='" + htmlEscape(cryptoSymbols[i]) + "'></div></div>";
+  }
+  page += "</div></div>";
   page += "<div class='settings-block'><span class='settings-title'>Location</span><div class='settings-desc'>Used for weather data and sun times.</div><div class='grid-3'>";
   page += "<div><label class='label'>Location name</label><input name='locname' value='" + htmlEscape(locationName) + "'></div>";
   page += "<div><label class='label'>Latitude</label><input name='lat' value='" + String(LAT, 6) + "'></div>";
@@ -2576,6 +2779,16 @@ void handleSave() {
     timerPresetMin[i] = sanitizeTimerMinutes(nextValue);
   }
 
+  for (int i = 0; i < 5; i++) {
+    String key = String("crypto") + String(i);
+    if (server.hasArg(key)) {
+      String newSym = server.arg(key);
+      newSym.toUpperCase();
+      newSym.trim();
+      cryptoSymbols[i] = newSym;
+      prefs.putString(key.c_str(), newSym);
+    }
+  }
   prefs.putString("notes", notesText);
   prefs.putString("accent", newAccent);
   prefs.putString("bg", newBg);
@@ -2637,6 +2850,20 @@ void setupWebServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.begin();
+}
+
+// =========================================================
+// MQTT
+// =========================================================
+WiFiClient mqttWiFiClient;
+PubSubClient mqttClient(mqttWiFiClient);
+long lastMqttReconnectAttempt = 0;
+
+boolean reconnectMQTT() {
+  if (mqttClient.connect("CryptoDisplay", MQTT_USER, MQTT_PASS)) {
+    mqttClient.publish("crypto_display/status", "online");
+  }
+  return mqttClient.connected();
 }
 
 // =========================================================
@@ -2757,6 +2984,8 @@ void setup() {
   ensureKpIndex();
   ensureCrypto();
 
+  mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
+
   setupWebServer();
 
   pageDirty = true;
@@ -2775,6 +3004,21 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!mqttClient.connected()) {
+      long now = millis();
+      if (now - lastMqttReconnectAttempt > 5000) {
+        lastMqttReconnectAttempt = now;
+        if (reconnectMQTT()) {
+          lastMqttReconnectAttempt = 0;
+        }
+      }
+    } else {
+      mqttClient.loop();
+    }
+  }
+
   updateWiFiConnectionState();
   updateFocusTimerState();
   updateTimerDoneDialogState();
