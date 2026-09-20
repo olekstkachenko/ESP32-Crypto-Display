@@ -15,6 +15,7 @@
 #include <time.h>
 #include <ArduinoJson.h>
 #include <WebServer.h>
+#include <Update.h>
 #include <Preferences.h>
 #include <SPI.h>
 #include <XPT2046_Touchscreen.h>
@@ -23,9 +24,18 @@
 #include "Secrets.h"
 
 // =========================================================
-// WIFI
+// WIFI & NETWORK CONFIG
 // =========================================================
-// Credentials moved to Secrets.h
+String wifiSSID = WIFI_SSID;
+String wifiPass = WIFI_PASS;
+bool apModeActive = false;
+
+// MQTT runtime config
+String mqttServer = MQTT_SERVER;
+int mqttPort = MQTT_PORT;
+String mqttUser = MQTT_USER;
+String mqttPass = MQTT_PASS;
+bool mqttEnabled = false;
 
 // =========================================================
 // DISPLAY / TOUCH
@@ -82,6 +92,7 @@ uint16_t COL_PANEL_ALT = 0x18C7;
 uint16_t COL_STROKE    = 0x31EC;
 uint16_t COL_TEXT      = 0xEF7D;
 uint16_t COL_DIM       = 0x94B2;
+uint16_t COL_MUTED     = 0x94B2;
 uint16_t COL_ACCENT    = 0x5EFA;
 
 const uint16_t COL_GREEN  = TFT_GREEN;
@@ -459,7 +470,9 @@ static float kpIndex = NAN;
 // Crypto Variables
 String cryptoSymbols[5] = {"BTCUSDT", "ETHUSDT", "XRPUSDT", "LTCUSDT", "SOLUSDT"};
 float cryptoPrices[5] = {NAN, NAN, NAN, NAN, NAN};
+float cryptoPrevPrices[5] = {NAN, NAN, NAN, NAN, NAN};
 float cryptoChanges[5] = {NAN, NAN, NAN, NAN, NAN};
+int cryptoIntervalSec = 60;
 
 // Fuel Variables
 static float brentPrice = NAN;
@@ -1052,6 +1065,15 @@ void loadStoredSettings() {
     cryptoSymbols[i] = prefs.getString(key.c_str(), cryptoSymbols[i]);
   }
 
+  cryptoIntervalSec = prefs.getInt("crypto_int", 60);
+  wifiSSID          = prefs.getString("wifi_ssid", WIFI_SSID);
+  wifiPass          = prefs.getString("wifi_pass", WIFI_PASS);
+  mqttEnabled       = prefs.getBool("mqtt_en", false);
+  mqttServer        = prefs.getString("mqtt_srv", MQTT_SERVER);
+  mqttPort          = prefs.getInt("mqtt_prt", MQTT_PORT);
+  mqttUser          = prefs.getString("mqtt_usr", MQTT_USER);
+  mqttPass          = prefs.getString("mqtt_pwd", MQTT_PASS);
+
   if (unitKey != "metric" && unitKey != "imperial") unitKey = "metric";
   if (regionFormatKey != "europe" && regionFormatKey != "us") regionFormatKey = "europe";
   buddyNickname.trim();
@@ -1340,6 +1362,33 @@ void ensureKpIndex() {
   }
 }
 
+String formatCryptoPrice(float price) {
+  if (isnan(price)) return "--";
+  if (price >= 1000.0f) {
+    return String(price, 2) + "$";
+  } else if (price >= 1.0f) {
+    return String(price, 2) + "$";
+  } else if (price >= 0.1f) {
+    return String(price, 3) + "$";
+  } else if (price >= 0.001f) {
+    return String(price, 4) + "$";
+  } else if (price >= 0.00001f) {
+    return String(price, 6) + "$";
+  } else {
+    return String(price, 8) + "$";
+  }
+}
+
+String sanitizeCryptoSymbol(String sym) {
+  sym.trim();
+  sym.toUpperCase();
+  if (sym.length() == 0) return "BTCUSDT";
+  if (!sym.endsWith("USDT") && !sym.endsWith("BUSD") && !sym.endsWith("USDC") && !sym.endsWith("FDUSD") && !sym.endsWith("EUR")) {
+    sym += "USDT";
+  }
+  return sym;
+}
+
 bool fetchCrypto() {
   if (WiFi.status() != WL_CONNECTED) return false;
 
@@ -1348,7 +1397,10 @@ bool fetchCrypto() {
 
   String symbolsParam = "%5B";
   for (int i=0; i<5; i++) {
-    symbolsParam += "%22" + cryptoSymbols[i] + "%22";
+    String sym = cryptoSymbols[i];
+    sym.trim();
+    sym.toUpperCase();
+    symbolsParam += "%22" + sym + "%22";
     if (i < 4) symbolsParam += ",";
   }
   symbolsParam += "%5D";
@@ -1356,9 +1408,11 @@ bool fetchCrypto() {
   String url = "https://api.binance.com/api/v3/ticker/24hr?symbols=" + symbolsParam;
 
   HTTPClient http;
+  http.setTimeout(5000);
   if (!http.begin(client, url)) {
     return false;
   }
+  http.setUserAgent("ESP32-Crypto-Display");
   
   if (String(BINANCE_API_KEY).length() > 0) {
     http.addHeader("X-MBX-APIKEY", BINANCE_API_KEY);
@@ -1374,7 +1428,7 @@ bool fetchCrypto() {
   http.end();
 
   // Binance 24hr ticker for multiple symbols returns an array of objects
-  StaticJsonDocument<2048> doc; // Increased size for 5 tokens
+  DynamicJsonDocument doc(4096);
   if (deserializeJson(doc, body)) return false;
 
   for (JsonObject item : doc.as<JsonArray>()) {
@@ -1383,7 +1437,13 @@ bool fetchCrypto() {
     float change = item["priceChangePercent"].as<float>();
     
     for (int i=0; i<5; i++) {
-      if (symbol == cryptoSymbols[i]) {
+      String target = cryptoSymbols[i];
+      target.trim();
+      target.toUpperCase();
+      if (symbol.equalsIgnoreCase(target)) {
+        if (!isnan(cryptoPrices[i])) {
+          cryptoPrevPrices[i] = cryptoPrices[i];
+        }
         cryptoPrices[i] = price;
         cryptoChanges[i] = change;
       }
@@ -1402,7 +1462,7 @@ void ensureCrypto() {
     if (isnan(cryptoPrices[i])) needsFetch = true;
   }
 
-  if ((needsFetch || (nowT - lastCryptoFetch) > CRYPTO_INTERVAL_SEC) &&
+  if ((needsFetch || (nowT - lastCryptoFetch) >= (time_t)cryptoIntervalSec) &&
       WiFi.status() == WL_CONNECTED) {
     if (fetchCrypto()) dataDirty = true;
   }
@@ -1416,6 +1476,8 @@ bool fetchFuelPrices() {
 
   // 1. Brent Oil
   if (http.begin(client, "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F")) {
+    http.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    http.setTimeout(4000);
     if (http.GET() == 200) {
       String body = http.getString();
       StaticJsonDocument<2048> doc;
@@ -1428,6 +1490,9 @@ bool fetchFuelPrices() {
 
   // 2. Ukraine Gas
   if (http.begin(client, "https://index.minfin.com.ua/markets/fuel/")) {
+    http.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    http.setTimeout(4000);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     if (http.GET() == 200) {
       String body = http.getString();
       int idx95 = body.indexOf("А-95");
@@ -1473,7 +1538,7 @@ void drawCard(int x, int y, int w, int h, bool accent = false) {
   tft.drawRoundRect(x, y, w, h, 10, accent ? COL_ACCENT : COL_STROKE);
 }
 
-void drawTopBar(const String& title) {
+void drawTopBar(const String& title = "") {
   tft.fillRect(0, 0, SCREEN_W, TOPBAR_H, COL_PANEL_ALT);
   tft.drawFastHLine(0, TOPBAR_H - 1, SCREEN_W, COL_STROKE);
 
@@ -2237,15 +2302,16 @@ void updateCurrentPageDynamic() {
     case PAGE_NOTES:   updateNotesDynamic(); break;
     case PAGE_STATUS:  updateStatusDynamic(); break;
     case PAGE_CRYPTO:  
+      ensureCrypto();
       if (dataDirty) {
-        drawPageCryptoFull();
+        updateCryptoDynamic();
         dataDirty = false;
       }
       break;
     case PAGE_FUEL:
       ensureFuel();
       if (dataDirty) {
-        drawPageFuelFull();
+        updateFuelDynamic();
         dataDirty = false;
       }
       break;
@@ -2348,49 +2414,67 @@ bool handleStatusTouch(int x, int y) {
   return false;
 }
 
-void drawPageCryptoFull() {
-  tft.fillScreen(COL_BG);
-  drawTopBar();
-  drawNavBar(); // This actually draws indicators now
-
+void drawCryptoCard(int i) {
   int startY = 45;
   int rowH = 46;
   int padding = 4;
+  int y = startY + i * rowH;
   
-  for (int i=0; i<5; i++) {
-    int y = startY + i * rowH;
-    tft.fillRoundRect(padding, y, SCREEN_W - padding*2, rowH - padding, 8, COL_PANEL);
+  tft.fillRoundRect(padding, y, SCREEN_W - padding*2, rowH - padding, 8, COL_PANEL);
+  
+  String displaySym = cryptoSymbols[i];
+  if (displaySym.endsWith("USDT")) displaySym = displaySym.substring(0, displaySym.length() - 4);
+  
+  tft.setTextDatum(TL_DATUM);
+  tft.setTextColor(COL_TEXT, COL_PANEL);
+  tft.drawString(displaySym, padding + 10, y + 10, 2);
+  
+  if (isnan(cryptoPrices[i])) {
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(COL_MUTED, COL_PANEL);
+    tft.drawString("--", SCREEN_W - padding - 10, y + 6, 2);
+  } else {
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(COL_ACCENT, COL_PANEL);
+    tft.drawString(formatCryptoPrice(cryptoPrices[i]), SCREEN_W - padding - 10, y + 6, 2);
     
-    String displaySym = cryptoSymbols[i];
-    if (displaySym.endsWith("USDT")) displaySym = displaySym.substring(0, displaySym.length() - 4);
+    float change = cryptoChanges[i];
+    uint16_t cColor = (change >= 0) ? TFT_GREEN : TFT_RED;
+    String cStr = (change >= 0 ? "+" : "") + String(change, 2) + "%";
     
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(COL_TEXT, COL_PANEL);
-    tft.drawString(displaySym, padding + 10, y + 10, 2);
-    
-    if (isnan(cryptoPrices[i])) {
-      tft.setTextDatum(TR_DATUM);
-      tft.setTextColor(COL_MUTED, COL_PANEL);
-      tft.drawString("--", SCREEN_W - padding - 10, y + 6, 2);
-    } else {
-      tft.setTextDatum(TR_DATUM);
-      tft.setTextColor(COL_ACCENT, COL_PANEL);
-      tft.drawString(String(cryptoPrices[i], 2) + "$", SCREEN_W - padding - 10, y + 6, 2);
-      
-      float change = cryptoChanges[i];
-      uint16_t cColor = (change >= 0) ? TFT_GREEN : TFT_RED;
-      String cStr = (change >= 0 ? "+" : "") + String(change, 2) + "%";
-      tft.setTextColor(cColor, COL_PANEL);
-      tft.drawString(cStr, SCREEN_W - padding - 10, y + 22, 1);
+    // Immediate price tick direction indicator
+    if (!isnan(cryptoPrevPrices[i]) && cryptoPrices[i] != cryptoPrevPrices[i]) {
+      if (cryptoPrices[i] > cryptoPrevPrices[i]) {
+        cStr += " ^";
+      } else {
+        cStr += " v";
+      }
     }
+    tft.setTextColor(cColor, COL_PANEL);
+    tft.drawString(cStr, SCREEN_W - padding - 10, y + 22, 1);
   }
 }
 
-void drawPageFuelFull() {
+void drawPageCryptoFull() {
   tft.fillScreen(COL_BG);
-  drawHeader("FUEL & COMMODITIES");
+  drawTopBar("Crypto Ticker");
   drawNavBar();
 
+  for (int i = 0; i < 5; i++) {
+    drawCryptoCard(i);
+  }
+
+  pageDirty = false;
+  lastDrawnPage = PAGE_CRYPTO;
+}
+
+void updateCryptoDynamic() {
+  for (int i = 0; i < 5; i++) {
+    drawCryptoCard(i);
+  }
+}
+
+void drawFuelCards() {
   int padding = 4;
   int startY = 50;
 
@@ -2431,6 +2515,20 @@ void drawPageFuelFull() {
   tft.setTextDatum(TR_DATUM);
   tft.setTextColor(COL_ACCENT, COL_PANEL);
   tft.drawString(isnan(dieselPrice) ? "--" : String(dieselPrice, 2) + " UAH", SCREEN_W - padding - 20, startY + 70, 2);
+}
+
+void drawPageFuelFull() {
+  tft.fillScreen(COL_BG);
+  drawTopBar("Fuel & Oil");
+  drawNavBar();
+  drawFuelCards();
+
+  pageDirty = false;
+  lastDrawnPage = PAGE_FUEL;
+}
+
+void updateFuelDynamic() {
+  drawFuelCards();
 }
 
 // =========================================================
@@ -2475,7 +2573,7 @@ void handleRoot() {
   }
 
   String page;
-  page.reserve(21000);
+  page.reserve(26000);
 
   page += "<!doctype html><html><head>";
   page += "<meta charset='utf-8'>";
@@ -2488,7 +2586,10 @@ void handleRoot() {
   page += ".hero{margin-bottom:18px;padding:18px 20px;border:1px solid #243244;border-radius:20px;background:linear-gradient(135deg,#111927 0%,#172235 100%);box-shadow:0 10px 30px rgba(0,0,0,.22);}";
   page += ".hero h1{font-size:30px;margin:0 0 8px 0;}";
   page += ".hero p{margin:0;color:#a9b7c9;font-size:14px;}";
-  page += ".ip{display:inline-block;margin-top:14px;padding:8px 12px;border-radius:999px;background:#0b1220;border:1px solid #334155;color:#dbe7f5;font-size:13px;}";
+  page += "<div style='margin-top:14px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;'>";
+  page += "<span class='ip'>IP: " + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString()) + "</span>";
+  page += "<a href='/update' style='color:#38bdf8;text-decoration:none;font-size:13px;font-weight:600;padding:8px 14px;border-radius:999px;border:1px solid #0284c7;background:#0369a120;'>⚡ OTA Firmware Update &rarr;</a>";
+  page += "</div></div>";
   page += ".layout{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;align-items:start;}";
   page += ".stack{display:grid;gap:16px;}";
   page += ".panel{background:#171b22;border:1px solid #2d3748;border-radius:18px;padding:18px;margin:0;}";
@@ -2653,7 +2754,14 @@ void handleRoot() {
   for (int i = 0; i < 5; i++) {
     page += "<div class='timer-slot'><div class='timer-slot-head'>Token " + String(i + 1) + "</div><div class='timer-slot-input'><input type='text' name='crypto" + String(i) + "' value='" + htmlEscape(cryptoSymbols[i]) + "'></div></div>";
   }
-  page += "</div></div>";
+  page += "</div>";
+  page += "<div style='margin-top:12px;'><label class='label'>Crypto Refresh Interval</label><select name='crypto_interval'>";
+  page += "<option value='30'" + String(cryptoIntervalSec==30?" selected":"") + ">30 seconds</option>";
+  page += "<option value='60'" + String(cryptoIntervalSec==60?" selected":"") + ">1 minute (recommended)</option>";
+  page += "<option value='120'" + String(cryptoIntervalSec==120?" selected":"") + ">2 minutes</option>";
+  page += "<option value='300'" + String(cryptoIntervalSec==300?" selected":"") + ">5 minutes</option>";
+  page += "</select></div>";
+  page += "</div>";
   page += "<div class='settings-block'><span class='settings-title'>Location</span><div class='settings-desc'>Used for weather data and sun times.</div><div class='grid-3'>";
   page += "<div><label class='label'>Location name</label><input name='locname' value='" + htmlEscape(locationName) + "'></div>";
   page += "<div><label class='label'>Latitude</label><input name='lat' value='" + String(LAT, 6) + "'></div>";
@@ -2677,6 +2785,25 @@ void handleRoot() {
   }
   page += "</div>";
   page += "</div></div>";
+
+  page += "<div class='panel' data-panel='network'>";
+  page += "<button type='button' class='panel-toggle' aria-expanded='true'><h2>Network & MQTT Settings</h2><span class='panel-chevron'>&#9662;</span></button>";
+  page += "<div class='panel-body'>";
+  page += "<p>Manage your WiFi and Home Assistant / Mosquitto MQTT broker credentials.</p>";
+  page += "<div class='settings-block'><span class='settings-title'>Wi-Fi Credentials</span><div class='settings-desc'>Update network credentials without reflashing firmware.</div>";
+  page += "<div class='grid'>";
+  page += "<div><label class='label'>Wi-Fi SSID</label><input type='text' name='wifi_ssid' value='" + htmlEscape(wifiSSID) + "'></div>";
+  page += "<div><label class='label'>Wi-Fi Password</label><input type='password' name='wifi_pass' placeholder='Leave blank to keep current' value=''></div>";
+  page += "</div></div>";
+  page += "<div class='settings-block'><span class='settings-title'>MQTT Broker</span><div class='settings-desc'>Optional telemetry reporting to Home Assistant or Mosquitto.</div>";
+  page += "<label style='display:flex;align-items:center;gap:10px;color:#edf2f7;margin-bottom:12px;'><input type='checkbox' name='mqtt_enabled' value='1'" + String(mqttEnabled ? " checked" : "") + " style='width:auto;'>Enable MQTT</label>";
+  page += "<div class='grid-3'>";
+  page += "<div><label class='label'>Server / Host</label><input type='text' name='mqtt_server' value='" + htmlEscape(mqttServer) + "' placeholder='192.168.1.100'></div>";
+  page += "<div><label class='label'>Port</label><input type='number' name='mqtt_port' value='" + String(mqttPort) + "'></div>";
+  page += "<div><label class='label'>Username</label><input type='text' name='mqtt_user' value='" + htmlEscape(mqttUser) + "'></div>";
+  page += "</div>";
+  page += "<div style='margin-top:10px;'><label class='label'>Password</label><input type='password' name='mqtt_pass' placeholder='Leave blank to keep current' value=''></div>";
+  page += "</div></div></div>";
 
   page += "</div><div class='stack'>";
 
@@ -2782,12 +2909,62 @@ void handleSave() {
   for (int i = 0; i < 5; i++) {
     String key = String("crypto") + String(i);
     if (server.hasArg(key)) {
-      String newSym = server.arg(key);
-      newSym.toUpperCase();
-      newSym.trim();
+      String newSym = sanitizeCryptoSymbol(server.arg(key));
       cryptoSymbols[i] = newSym;
       prefs.putString(key.c_str(), newSym);
     }
+  }
+
+  // Invalidate crypto prices so they re-fetch fresh data for updated symbols
+  for (int i = 0; i < 5; i++) {
+    cryptoPrices[i] = NAN;
+    cryptoChanges[i] = NAN;
+  }
+  lastCryptoFetch = 0;
+
+  if (server.hasArg("crypto_interval")) {
+    int ci = server.arg("crypto_interval").toInt();
+    if (ci >= 15 && ci <= 3600) {
+      cryptoIntervalSec = ci;
+      prefs.putInt("crypto_int", cryptoIntervalSec);
+    }
+  }
+
+  if (server.hasArg("wifi_ssid") && server.arg("wifi_ssid").length() > 0) {
+    String newSSID = server.arg("wifi_ssid");
+    newSSID.trim();
+    wifiSSID = newSSID;
+    prefs.putString("wifi_ssid", wifiSSID);
+  }
+  if (server.hasArg("wifi_pass") && server.arg("wifi_pass").length() > 0) {
+    wifiPass = server.arg("wifi_pass");
+    prefs.putString("wifi_pass", wifiPass);
+  }
+
+  bool newMqttEnabled = server.hasArg("mqtt_enabled");
+  mqttEnabled = newMqttEnabled;
+  prefs.putBool("mqtt_en", mqttEnabled);
+
+  if (server.hasArg("mqtt_server")) {
+    mqttServer = server.arg("mqtt_server");
+    mqttServer.trim();
+    prefs.putString("mqtt_srv", mqttServer);
+  }
+  if (server.hasArg("mqtt_port")) {
+    int p = server.arg("mqtt_port").toInt();
+    if (p > 0 && p < 65536) {
+      mqttPort = p;
+      prefs.putInt("mqtt_prt", mqttPort);
+    }
+  }
+  if (server.hasArg("mqtt_user")) {
+    mqttUser = server.arg("mqtt_user");
+    mqttUser.trim();
+    prefs.putString("mqtt_usr", mqttUser);
+  }
+  if (server.hasArg("mqtt_pass") && server.arg("mqtt_pass").length() > 0) {
+    mqttPass = server.arg("mqtt_pass");
+    prefs.putString("mqtt_pwd", mqttPass);
   }
   prefs.putString("notes", notesText);
   prefs.putString("accent", newAccent);
@@ -2849,6 +3026,56 @@ void handleSave() {
 void setupWebServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/save", HTTP_POST, handleSave);
+
+  // OTA Firmware Update Endpoints
+  server.on("/update", HTTP_GET, []() {
+    server.sendHeader("Connection", "close");
+    String updateHtml = F("<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'>"
+      "<title>Crypto Display - Firmware Update</title>"
+      "<style>"
+      "body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}"
+      ".card{background:#161b22;padding:32px;border-radius:12px;border:1px solid #30363d;max-width:420px;width:90%;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,0.6);}"
+      "h2{color:#58a6ff;margin-top:0;font-size:22px;}"
+      "p{color:#8b949e;font-size:14px;line-height:1.5;}"
+      "input[type=file]{margin:24px 0;width:100%;color:#c9d1d9;padding:10px;border:1px dashed #30363d;border-radius:6px;background:#0d1117;box-sizing:border-box;}"
+      "input[type=submit]{background:#238636;color:#ffffff;border:none;padding:12px 20px;border-radius:6px;font-size:16px;cursor:pointer;width:100%;font-weight:600;}"
+      "input[type=submit]:hover{background:#2ea043;}"
+      ".back{display:inline-block;margin-top:18px;color:#58a6ff;text-decoration:none;font-size:14px;}"
+      "</style></head><body>"
+      "<div class='card'><h2>⚡ OTA Firmware Update</h2>"
+      "<p>Upload compiled <code>firmware.bin</code> to wirelessly update your Crypto Display without USB.</p>"
+      "<form method='POST' action='/update' enctype='multipart/form-data'>"
+      "<input type='file' name='update' accept='.bin' required>"
+      "<input type='submit' value='Flash Firmware Now'>"
+      "</form><a href='/' class='back'>&larr; Back to Dashboard</a></div></body></html>");
+    server.send(200, "text/html", updateHtml);
+  });
+
+  server.on("/update", HTTP_POST, []() {
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/plain", (Update.hasError()) ? "OTA FAILED" : "OTA SUCCESS! Rebooting Crypto Display...");
+    delay(1000);
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.printf("OTA Update: %s\n", upload.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) {
+        Serial.printf("OTA Success: %u bytes\n", upload.totalSize);
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
+
   server.begin();
 }
 
@@ -2860,7 +3087,8 @@ PubSubClient mqttClient(mqttWiFiClient);
 long lastMqttReconnectAttempt = 0;
 
 boolean reconnectMQTT() {
-  if (mqttClient.connect("CryptoDisplay", MQTT_USER, MQTT_PASS)) {
+  if (!mqttEnabled || mqttServer.length() == 0) return false;
+  if (mqttClient.connect("CryptoDisplay", mqttUser.c_str(), mqttPass.c_str())) {
     mqttClient.publish("crypto_display/status", "online");
   }
   return mqttClient.connected();
@@ -2878,6 +3106,29 @@ void waitForNtpTime() {
   }
 }
 
+void startSetupAp() {
+  WiFi.disconnect();
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP("CryptoDisplay-Setup");
+  apModeActive = true;
+  IPAddress apIP = WiFi.softAPIP();
+  
+  tft.fillScreen(COL_BG);
+  drawTopBar("WiFi Setup Mode");
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(COL_TEXT, COL_BG);
+  tft.drawString("WiFi Not Connected", SCREEN_W / 2, 70, 4);
+  tft.drawString("Connect phone to:", SCREEN_W / 2, 120, 2);
+  tft.setTextColor(COL_ACCENT, COL_BG);
+  tft.drawString("CryptoDisplay-Setup", SCREEN_W / 2, 145, 4);
+  tft.setTextColor(COL_TEXT, COL_BG);
+  tft.drawString("Open browser at:", SCREEN_W / 2, 195, 2);
+  tft.setTextColor(COL_GREEN, COL_BG);
+  tft.drawString(apIP.toString(), SCREEN_W / 2, 225, 4);
+  tft.setTextColor(COL_DIM, COL_BG);
+  tft.drawString("Save WiFi in web settings", SCREEN_W / 2, 270, 2);
+}
+
 void beginWiFiConnect() {
   if (!wifiEnabled) {
     WiFi.disconnect(true, true);
@@ -2888,7 +3139,7 @@ void beginWiFiConnect() {
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  WiFi.begin(wifiSSID.c_str(), wifiPass.c_str());
   wifiConnectInProgress = true;
   wifiConnectStartedMs = millis();
 }
@@ -2898,10 +3149,15 @@ void connectWiFi(bool waitForConnection = true) {
   if (!waitForConnection) return;
 
   unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 12000) {
     delay(200);
   }
   wifiConnectInProgress = false;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi connection failed. Starting Setup AP mode...");
+    startSetupAp();
+  }
 }
 
 void updateWiFiConnectionState() {
@@ -2910,6 +3166,7 @@ void updateWiFiConnectionState() {
   wl_status_t status = WiFi.status();
   if (status == WL_CONNECTED) {
     wifiConnectInProgress = false;
+    apModeActive = false;
     ensureSunTimesForToday();
     ensureSun();
     ensureWeather();
@@ -2974,41 +3231,48 @@ void setup() {
   tft.drawString("Connecting WiFi...", 10, 34, 2);
   connectWiFi(true);
 
-  tft.drawString("Syncing time...", 10, 58, 2);
-  configTzTime(timezonePosixByKey(timezoneKey),
-               "pool.ntp.org", "time.google.com", "time.cloudflare.com");
-  waitForNtpTime();
+  if (WiFi.status() == WL_CONNECTED) {
+    tft.drawString("Syncing time...", 10, 58, 2);
+    configTzTime(timezonePosixByKey(timezoneKey),
+                 "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+    waitForNtpTime();
 
-  ensureSunTimesForToday();
-  ensureSun();
-  ensureKpIndex();
-  ensureCrypto();
+    ensureSunTimesForToday();
+    ensureSun();
+    ensureKpIndex();
+    ensureCrypto();
 
-  mqttClient.setServer(MQTT_SERVER, MQTT_PORT);
+    if (mqttEnabled && mqttServer.length() > 0) {
+      mqttClient.setServer(mqttServer.c_str(), mqttPort);
+      mqttClient.setSocketTimeout(1);
+    }
+  }
 
   setupWebServer();
 
-  pageDirty = true;
-  dataDirty = true;
-  notesDirty = true;
+  if (!apModeActive) {
+    pageDirty = true;
+    dataDirty = true;
+    notesDirty = true;
 
-  drawCurrentPageFull();
-  updateCurrentPageDynamic();
+    drawCurrentPageFull();
+    updateCurrentPageDynamic();
+  }
 
   lastClockTick = millis();
   lastDataTick = millis();
 
   Serial.print("Crypto Display web: http://");
-  Serial.println(WiFi.localIP());
+  Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString());
 }
 
 void loop() {
   server.handleClient();
   
-  if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED && mqttEnabled && mqttServer.length() > 0) {
     if (!mqttClient.connected()) {
       long now = millis();
-      if (now - lastMqttReconnectAttempt > 5000) {
+      if (now - lastMqttReconnectAttempt > 30000) {
         lastMqttReconnectAttempt = now;
         if (reconnectMQTT()) {
           lastMqttReconnectAttempt = 0;
@@ -3064,24 +3328,28 @@ void loop() {
     }
   }
 
-  if (millis() - lastDataTick >= DATA_TICK_MS) {
-    lastDataTick = millis();
-    ensureSunTimesForToday();
-    ensureWeather();
-    ensureKpIndex();
-  }
+  if (!apModeActive) {
+    if (millis() - lastDataTick >= DATA_TICK_MS) {
+      lastDataTick = millis();
+      ensureSunTimesForToday();
+      ensureWeather();
+      ensureKpIndex();
+      ensureCrypto();
+      ensureFuel();
+    }
 
-  if (pageDirty || lastDrawnPage != currentPage) {
-    drawCurrentPageFull();
-    updateCurrentPageDynamic();
-    pageDirty = false;
-    dataDirty = false;
-  }
+    if (pageDirty || lastDrawnPage != currentPage) {
+      drawCurrentPageFull();
+      updateCurrentPageDynamic();
+      pageDirty = false;
+      dataDirty = false;
+    }
 
-  if (millis() - lastClockTick >= CLOCK_TICK_MS) {
-    lastClockTick = millis();
-    updateCurrentPageDynamic();
-    dataDirty = false;
+    if (millis() - lastClockTick >= CLOCK_TICK_MS) {
+      lastClockTick = millis();
+      updateCurrentPageDynamic();
+      dataDirty = false;
+    }
   }
 
   delay(10);

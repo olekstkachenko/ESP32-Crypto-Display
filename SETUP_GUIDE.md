@@ -1,9 +1,24 @@
 # Crypto Display Setup Guide
 
-This guide explains how to install and upload the Crypto Display software to a compatible ESP32 touchscreen board using **Arduino IDE**.
+This guide explains how to install and upload the Crypto Display software to a compatible ESP32 touchscreen board using **PlatformIO** (recommended) or **Arduino IDE**.
 
+---
 
-## What You Need
+## ⚡ Option A: Quick Setup with PlatformIO (Recommended)
+
+If you use **VS Code** with the **PlatformIO IDE** extension, no manual library installation or `User_Setup.h` editing is required:
+
+1. Open the project folder in **VS Code**.
+2. Edit [Secrets.h](file:///C:/Users/maest/.gemini/antigravity-ide/scratch/ESP32-Crypto-Display/Secrets.h) with your WiFi credentials.
+3. Connect your ESP32 CYD board via USB.
+4. Click **PlatformIO: Build** or run `pio run`.
+5. Click **PlatformIO: Upload** or run `pio run --target upload`.
+
+---
+
+## 🛠️ Option B: Setup with Arduino IDE
+
+### What You Need
 
 Before you begin, make sure you have:
 
